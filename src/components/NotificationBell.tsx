@@ -106,7 +106,19 @@ type Feed = {
   overdueAutoCount: number;
   /** 邮箱账单「下期自动导入」抓回来的待确认账单。 */
   pendingBillImports: PendingBillImport[];
+  /** 没有任何找回通道（邮箱 / MMH / 飞牛）的账号，见 lib/account-recovery。 */
+  missingRecoveryUsers: MissingRecoveryUser[];
 };
+
+type MissingRecoveryUser = { id: string; name: string };
+
+/**
+ * 「账号没有找回方式」提示的关闭状态。
+ *
+ * 刻意用 **sessionStorage** 而不是 localStorage：用户要求"每次开机都提示一次"，
+ * 关掉只代表"这一开机周期我知道了"，重启浏览器/桌面端（新会话）会重新出现。
+ */
+const ACCOUNT_RECOVERY_DISMISS_KEY = "mmh:account-recovery-warning-dismissed";
 
 type PendingBillImport = {
   id: string;
@@ -205,6 +217,7 @@ export function NotificationBell({ collapsed }: { collapsed: boolean }) {
     receipt: null,
     overdueAutoCount: 0,
     pendingBillImports: [],
+    missingRecoveryUsers: [],
   });
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -212,6 +225,23 @@ export function NotificationBell({ collapsed }: { collapsed: boolean }) {
   const receipts = useNotificationReceipts();
   const { entries: readEntries, readIds, markRead, markManyRead, clearRead } = useNotificationReads();
   const updateNotice = useUpdateNotice();
+  const [recoveryDismissed, setRecoveryDismissed] = useState(false);
+  // 开机提示：只在本次会话内可关，见 ACCOUNT_RECOVERY_DISMISS_KEY。
+  useEffect(() => {
+    try {
+      setRecoveryDismissed(window.sessionStorage.getItem(ACCOUNT_RECOVERY_DISMISS_KEY) === "1");
+    } catch {
+      // 隐私模式下 sessionStorage 不可用 —— 那就每次都提示，方向是对的。
+    }
+  }, []);
+  const dismissRecoveryWarning = useCallback(() => {
+    setRecoveryDismissed(true);
+    try {
+      window.sessionStorage.setItem(ACCOUNT_RECOVERY_DISMISS_KEY, "1");
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -225,6 +255,9 @@ export function NotificationBell({ collapsed }: { collapsed: boolean }) {
           overdueAutoCount: Number(data.overdueAutoCount ?? 0) || 0,
           pendingBillImports: Array.isArray(data.pendingBillImports)
             ? (data.pendingBillImports as PendingBillImport[])
+            : [],
+          missingRecoveryUsers: Array.isArray(data.accountRecovery?.missingUsers)
+            ? (data.accountRecovery.missingUsers as MissingRecoveryUser[])
             : [],
         });
         setFailed(false);
@@ -390,9 +423,19 @@ export function NotificationBell({ collapsed }: { collapsed: boolean }) {
   }, []);
 
   const unreadTotal = unreadReminders.length + unreadExecutions.length;
+  /**
+   * 账号找回提示和系统更新/待导入账单一样是**待办**，不进「未读」页签计数：
+   * 它只有"绑好邮箱/MMH"或本次开机点「稍后」才会消失，不存在"标记已读"。
+   */
+  const missingRecoveryUsers = feed.missingRecoveryUsers;
+  const recoveryWarningPending = missingRecoveryUsers.length > 0 && !recoveryDismissed;
   // 系统更新提示不计进「未读」页签的计数：它和待导入账单一样是待办，不是一条
   // 需要标记已读的消息，只有升级（远端版本变了）或「稍后」才会让它消失。
-  const badgeCount = unreadTotal + pendingBillImports.length + (updateNotice.pending ? 1 : 0);
+  const badgeCount =
+    unreadTotal +
+    pendingBillImports.length +
+    (updateNotice.pending ? 1 : 0) +
+    (recoveryWarningPending ? 1 : 0);
 
   const markAllRead = useCallback(() => {
     markManyRead([...unreadReminders.map(({ note }) => note), ...unreadExecutions]);
@@ -485,6 +528,42 @@ export function NotificationBell({ collapsed }: { collapsed: boolean }) {
       <div className="min-h-0 flex-1 overflow-y-auto">
         {tab === "unread" ? (
           <>
+            {recoveryWarningPending ? (
+              <Section title={t("notification.accountRecovery.section")}>
+                <div className="px-3 py-2">
+                  <div className="flex items-start gap-2">
+                    <AlertTriangle size={13} className="mt-0.5 shrink-0 text-amber-600" />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[11.5px] font-medium text-slate-700">
+                        {t("notification.accountRecovery.title")}
+                      </p>
+                      <p className="mt-0.5 text-[10.5px] leading-relaxed text-slate-400">
+                        {t("notification.accountRecovery.body", {
+                          names: missingRecoveryUsers.map((user) => user.name).join(", "),
+                        })}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="mt-1.5 flex items-center gap-1.5 pl-5">
+                    <Link
+                      href="/settings/users"
+                      onClick={() => setOpen(false)}
+                      className="rounded bg-amber-600 px-2 py-0.5 text-[10.5px] font-medium text-white transition-colors hover:bg-amber-700"
+                    >
+                      {t("notification.accountRecovery.action")}
+                    </Link>
+                    <button
+                      type="button"
+                      onClick={dismissRecoveryWarning}
+                      className="rounded px-2 py-0.5 text-[10.5px] font-medium text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700"
+                    >
+                      {t("notification.update.dismiss")}
+                    </button>
+                  </div>
+                </div>
+              </Section>
+            ) : null}
+
             {updateNotice.pending && updateNotice.notice ? (
               <Section title={t("notification.update.section")}>
                 <div className="px-3 py-2">
@@ -606,7 +685,11 @@ export function NotificationBell({ collapsed }: { collapsed: boolean }) {
               </Section>
             ) : null}
 
-            {unreadTotal === 0 && pendingBillImports.length === 0 && !updateNotice.pending && !loading ? (
+            {unreadTotal === 0 &&
+            pendingBillImports.length === 0 &&
+            !updateNotice.pending &&
+            !recoveryWarningPending &&
+            !loading ? (
               <p className="px-3 py-6 text-center text-xs text-slate-400">{t("notification.unread.empty")}</p>
             ) : null}
           </>

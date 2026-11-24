@@ -2,7 +2,7 @@
 import { ModalLayer } from "@/components/ModalLayer";
 
 import { useState, useEffect } from "react";
-import { KeyRound, Unlink, UserRoundCheck, UserRoundPlus, X } from "lucide-react";
+import { AlertTriangle, KeyRound, Unlink, UserRoundCheck, UserRoundPlus, X } from "lucide-react";
 import {
   SettingsActionButton,
   SettingsEmptyRow,
@@ -14,6 +14,7 @@ import {
   SettingsTd,
   SettingsTh,
 } from "@/components/settings/SettingsPageScaffold";
+import { usersMissingAccountRecovery } from "@/lib/account-recovery";
 import { SESSION_DAY_OPTIONS } from "@/lib/session-days";
 import { useI18n } from "@/lib/i18n";
 import { CredentialPasswordField, resetCredentialKindCache } from "@/components/CredentialPasswordField";
@@ -1364,6 +1365,14 @@ export default function UsersPage() {
     }
   }
 
+  /**
+   * 没有任何找回通道（邮箱 / MMH / 飞牛）的账号。
+   *
+   * 用户裁定（2026-11-24）：这里必须直说风险 —— 忘记密码没人能替他改，唯一的管理员
+   * 忘了密码，整套账簿就再也打不开。判定口径与通知栏共用 `hasAccountRecovery`。
+   */
+  const recoveryRiskUsers = usersMissingAccountRecovery(users);
+
   return (
     <div className="space-y-4">
       <SettingsPageHeader
@@ -1371,6 +1380,20 @@ export default function UsersPage() {
         description={t("settings.users.description")}
         count={users.length}
       />
+
+      {recoveryRiskUsers.length > 0 && (
+        <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+          <div className="space-y-1">
+            <p className="font-medium">{t("settings.users.recoveryWarning.title")}</p>
+            <p className="leading-relaxed">
+              {t("settings.users.recoveryWarning.body", {
+                names: recoveryRiskUsers.map((user) => user.name).join(", "),
+              })}
+            </p>
+          </div>
+        </div>
+      )}
 
       {loadError && (
         <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2">

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { accountLabelFieldsFromRequest } from "@/lib/server/account-label-fields";
+import { loadMissingRecoveryUsers } from "@/lib/server/account-recovery";
 import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { loadNotificationFeed } from "@/lib/server/notification-feed";
@@ -27,10 +28,13 @@ export async function GET(req: NextRequest) {
       accountLabelFields: accountLabelFieldsFromRequest(req),
       baseCurrency,
     });
+    // 账号找回能力不是"消息"，但它决定账簿能不能再被打开，所以跟着同一次轮询一起下发。
+    const missingRecoveryUsers = await loadMissingRecoveryUsers(householdId);
     return NextResponse.json({
       ok: true,
       serverTime: new Date().toISOString(),
       ...feed,
+      accountRecovery: { missingUsers: missingRecoveryUsers },
     });
   } catch (error) {
     logger.warn(
@@ -44,6 +48,7 @@ export async function GET(req: NextRequest) {
       receipt: null,
       overdueAutoCount: 0,
       pendingBillImports: [],
+      accountRecovery: { missingUsers: [] },
     });
   }
 }
