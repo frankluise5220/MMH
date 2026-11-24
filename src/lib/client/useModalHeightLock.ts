@@ -3,6 +3,19 @@
 import { useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 
 /**
+ * 摘掉高度锁量一次自然高度：`height: auto` 仍受 `.app-modal-panel` 的 `max-h` 截断，
+ * 所以内容高出视口时量到的就是上限值（正是该锁的值）。行内样式在同一个 layout effect
+ * 里恢复，浏览器不会绘制中间态。
+ */
+function measureNaturalHeight(panel: HTMLElement): number {
+  const inlineHeight = panel.style.height;
+  panel.style.height = "auto";
+  const measured = Math.round(panel.getBoundingClientRect().height);
+  panel.style.height = inlineHeight;
+  return measured;
+}
+
+/**
  * 弹窗高度 = **当前内容的自然高度**（运行时量一次，不要手填魔数）。
  *
  * 核心约束（2026-10-23 用户「窗口组件的统一要求」）：
@@ -32,10 +45,10 @@ import { useLayoutEffect, useRef, useState, type CSSProperties } from "react";
  *     </form>
  *   </div>
  *
- * 原理：锁定后仍能算出「当前内容的自然高度」= 面板高 − 滚动区可视高 + 滚动区内容高
- * （与是否锁定无关），所以不需要先解除锁定再量（不会闪一下）。面板尚未量到时是 `h-auto`，
- * 此时量到的就是自然高度。每次渲染后都复测（只有一次布局读取），依赖数据异步到位
- * （如存单/持仓加载完）也能跟上。
+ * 原理：内容溢出时「自然高度」= 面板高 − 滚动区可视高 + 滚动区内容高（一次布局读取，不必解除锁定）；
+ * 内容没溢出时滚动区被卡片自适应包住、可视高恒等于内容高，上面那条式子退化成面板高本身，
+ * 于是改成临时摘掉高度锁量一次（同一帧恢复，不会闪）。每次渲染后都复测，依赖数据异步到位
+ * （如存单/持仓加载完）也能跟上，内容变短（如取消分期）也能收回。
  *
  * 高度通过 `--app-modal-fixed-height` 变量交给 `.app-modal-panel-fixed-height`（见 globals.css）：
  * 移动端（≤767px）那条层外的 `.app-modal-panel { height: 100dvh }` 依旧生效，仍整屏显示。
@@ -87,7 +100,17 @@ export function useModalHeightLock<
     if (!scroller) return;
     const viewportHeight = scroller.getBoundingClientRect().height;
     if (viewportHeight <= 0) return;
-    const needed = Math.round(panelHeight - viewportHeight + scroller.scrollHeight);
+    const contentHeight = scroller.scrollHeight;
+    // 自然高度有两种算法，必须分情况 —— 只用前一种就是「取消分期后窗口收不回去」的根因：
+    //  · 内容溢出（滚动区被压缩）：「面板高 − 可视高 + 内容高」一次布局读取就算得对；
+    //  · 内容没溢出：卡片区是按内容自适应的（多余空白被按钮行的 `mt-auto` 吃掉，卡片不会被
+    //    拉伸），所以「可视高」恒等于「内容高」，那条式子退化成「面板高」本身 ——
+    //    高度于是只能变大、永远收不回去（关掉分期后卡片矮了 68px，窗口仍停在 605，按钮被推远 80px）。
+    //    这时改成「临时摘掉高度锁量一次」，同一帧里恢复，浏览器不会画出中间态。
+    const needed =
+      contentHeight > viewportHeight + 1
+        ? Math.round(panelHeight - viewportHeight + contentHeight)
+        : measureNaturalHeight(panel);
     if (needed <= 0) return;
     // 只在数值真的变了才写 state（同值 setState 会被 React 丢弃，不会造成重渲染循环）。
     // 1px 死区：panelHeight 是「被本 hook 锁定」的高度，`panelHeight - viewportHeight + scrollHeight`
