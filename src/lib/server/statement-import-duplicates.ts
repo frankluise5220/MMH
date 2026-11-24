@@ -36,6 +36,10 @@ export type StatementDuplicateItemLike = {
   account?: string | null;
   fromAccount?: string | null;
   toAccount?: string | null;
+  /** 新导入行的备注：覆盖旧记录时用来判断「备注是否不一致」，也是追加旧备注的基底。 */
+  remark?: string | null;
+  /** 没有备注时的落账备注来源（与 /statement/import 的 buildNote 一致）。 */
+  rawText?: string | null;
 };
 
 export type StatementDuplicateGroup = {
@@ -52,9 +56,20 @@ export type StatementDuplicateGroup = {
   counterAccountName?: string;
 };
 
+/** 覆盖时要把旧备注追加到哪一行（index 是本次 items 数组下标）。 */
+export type StatementDuplicateMergedNote = {
+  index: number;
+  note: string;
+};
+
 export type StatementDuplicateResult = {
   total: number;
   groups: StatementDuplicateGroup[];
+  /**
+   * 「覆盖」时新记录该用的备注：旧记录有备注且与新备注不一致时，把旧备注追到后面。
+   * 只有检测出重复的组才会产生条目；没有需要合并的行时为空数组。
+   */
+  nextNotes: StatementDuplicateMergedNote[];
 };
 
 const TX_TYPES = new Set(["expense", "income", "transfer", "investment"]);
@@ -64,6 +79,37 @@ function amountKeyOf(item: StatementDuplicateItemLike): string | null {
   const amount = raw > 0 ? raw : Math.abs(Number(item.outflow ?? 0));
   if (!Number.isFinite(amount) || amount === 0) return null;
   return amount.toFixed(2);
+}
+
+/** 落账备注里由 `buildNote` 自动追加的「（入账日期 …）」，比对时不算用户备注差异。 */
+const POSTED_DATE_SUFFIX_RE = /\s*[（(]入账日期?\s*[^）)]*[）)]\s*$/;
+
+function noteCompareKey(value: string | null | undefined) {
+  return String(value ?? "").trim().replace(POSTED_DATE_SUFFIX_RE, "").trim();
+}
+
+/**
+ * 覆盖旧记录时的备注合并（2026-11-24 用户裁定）：
+ * 新旧备注不一致时，把**旧备注追加到新记录后面**，避免用户手工补的备注
+ * （报销、用途说明）随覆盖一起丢失。
+ *
+ * - 旧备注为空 → 保留新备注；
+ * - 新备注为空（或只有入账日期后缀）→ 直接用旧备注；
+ * - 两条一致、或一方已经包含另一方（同一份账单导第二遍、上次已合并过）→ 不重复追加。
+ */
+export function mergeImportNote(newNote: string | null | undefined, oldNote: string | null | undefined) {
+  const current = String(newNote ?? "").trim();
+  const previous = String(oldNote ?? "").trim();
+  if (!previous) return current;
+  const currentKey = noteCompareKey(current);
+  const previousKey = noteCompareKey(previous);
+  if (!previousKey) return current;
+  if (!currentKey) return previous;
+  if (currentKey === previousKey) return current;
+  // 一方已经包含另一方（模板微调、上次覆盖时已合并过）→ 取信息更全的那条，不重复追加。
+  if (currentKey.includes(previousKey)) return current;
+  if (previousKey.includes(currentKey)) return previous;
+  return `${current}；${previous}`;
 }
 
 /**
@@ -124,6 +170,8 @@ function identityOf(type: string | null, accountId: string | null, toAccountId: 
 }
 
 type ResolvedRow = {
+  /** 该行在调用方 items 数组里的下标：覆盖时按金额配对，把旧备注写回这一行。 */
+  index: number;
   type: string | null;
   dateKey: string;
   amountKey: string;
@@ -142,6 +190,8 @@ type Bucket = {
   /** 转账的对手账户 id：输出时换成账户名，解析不出双方时为空。 */
   counterAccountId?: string;
   amounts: string[];
+  /** 组内每个导入行的下标与金额键：与旧记录按金额一一配对追加备注。 */
+  items: Array<{ index: number; amountKey: string }>;
 };
 
 /**
@@ -163,7 +213,8 @@ export async function detectStatementImportDuplicates(
   const accounts = needsNameMatch ? await loadHouseholdAccounts(householdId) : [];
 
   const rows: ResolvedRow[] = [];
-  for (const item of items) {
+  for (let index = 0; index < items.length; index++) {
+    const item = items[index];
     const date = parseDateInputToUtc(String(item.date ?? ""));
     if (!date) continue;
     const amountKey = amountKeyOf(item);
@@ -175,6 +226,7 @@ export async function detectStatementImportDuplicates(
     // 转账落库挂转出方；转入方向（信用卡还款入账）预览里的 account 是收款方，不能用它。
     const accountId = type === "transfer" ? from.id ?? account.id ?? to.id : account.id ?? from.id ?? to.id;
     rows.push({
+      index,
       type,
       dateKey: formatDateUtc(date),
       amountKey,
@@ -184,7 +236,7 @@ export async function detectStatementImportDuplicates(
       counterAccountName: to.name,
     });
   }
-  if (rows.length === 0) return { total: 0, groups: [] };
+  if (rows.length === 0) return { total: 0, groups: [], nextNotes: [] };
 
   // 按「日期 + 类型 + 交易身份」归组：组内笔数一致后，再比金额多重集。
   const buckets = new Map<string, Bucket>();
@@ -207,15 +259,17 @@ export async function detectStatementImportDuplicates(
       accountName: row.accountName ?? "",
       counterAccountId: row.type === "transfer" ? row.toId ?? undefined : undefined,
       amounts: [],
+      items: [],
     };
     bucket.amounts.push(row.amountKey);
+    bucket.items.push({ index: row.index, amountKey: row.amountKey });
     buckets.set(key, bucket);
   }
-  if (buckets.size === 0 || scopeAccountIds.size === 0) return { total: 0, groups: [] };
+  if (buckets.size === 0 || scopeAccountIds.size === 0) return { total: 0, groups: [], nextNotes: [] };
 
   const minDay = parseDateInputToUtc(minDayKey);
   const maxDay = parseDateInputToUtc(maxDayKey);
-  if (!minDay || !maxDay) return { total: 0, groups: [] };
+  if (!minDay || !maxDay) return { total: 0, groups: [], nextNotes: [] };
   const maxDayExclusive = addDaysUtc(maxDay, 1);
 
   const accountIdList = [...scopeAccountIds];
@@ -226,7 +280,7 @@ export async function detectStatementImportDuplicates(
       date: { gte: minDay, lt: maxDayExclusive },
       OR: [{ accountId: { in: accountIdList } }, { toAccountId: { in: accountIdList } }],
     },
-    select: { id: true, accountId: true, toAccountId: true, date: true, amount: true, type: true },
+    select: { id: true, accountId: true, toAccountId: true, date: true, amount: true, type: true, note: true },
   });
 
   const nameById = new Map<string, string>();
@@ -241,21 +295,23 @@ export async function detectStatementImportDuplicates(
   }
 
   // 库里已有记录按同样的分组键建索引；类型未知时用 `*` 兜底（不分类型整组比对）。
-  const existing = new Map<string, { ids: string[]; amounts: string[] }>();
+  const existing = new Map<string, { ids: string[]; amounts: string[]; notes: string[] }>();
   for (const record of records) {
     const dateKey = formatDateUtc(record.date);
     const identity = identityOf(record.type, record.accountId, record.toAccountId);
     if (!identity) continue;
     const amount = Math.abs(Number(record.amount ?? 0)).toFixed(2);
     for (const key of [`${dateKey}|${record.type}|${identity}`, `${dateKey}|*|${identity}`]) {
-      const entry = existing.get(key) ?? { ids: [], amounts: [] };
+      const entry = existing.get(key) ?? { ids: [], amounts: [], notes: [] };
       entry.ids.push(record.id);
       entry.amounts.push(amount);
+      entry.notes.push(record.note ?? "");
       existing.set(key, entry);
     }
   }
 
   const groups: StatementDuplicateGroup[] = [];
+  const nextNotes: StatementDuplicateMergedNote[] = [];
   let total = 0;
   for (const [key, bucket] of buckets) {
     const match = existing.get(key);
@@ -281,10 +337,32 @@ export async function detectStatementImportDuplicates(
         : {}),
     });
     total += bucket.amounts.length;
+
+    // 覆盖后的备注：组内按金额把旧记录与新行配对（同组金额多重集已相等），
+    // 旧备注有内容且与新备注不一致时追加到新备注后面（2026-11-24 用户裁定）。
+    const oldNotesByAmount = new Map<string, string[]>();
+    match.ids.forEach((_, i) => {
+      const amount = match.amounts[i];
+      const queue = oldNotesByAmount.get(amount);
+      if (queue) queue.push(match.notes[i] ?? "");
+      else oldNotesByAmount.set(amount, [match.notes[i] ?? ""]);
+    });
+    for (const entry of bucket.items) {
+      const queue = oldNotesByAmount.get(entry.amountKey);
+      if (!queue || queue.length === 0) continue;
+      const oldNote = queue.shift() ?? "";
+      if (!oldNote.trim()) continue;
+      const item = items[entry.index];
+      if (!item) continue;
+      const currentNote = String(item.remark ?? item.rawText ?? "").trim();
+      const merged = mergeImportNote(currentNote, oldNote);
+      if (merged === currentNote) continue;
+      nextNotes.push({ index: entry.index, note: merged });
+    }
   }
 
   groups.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
-  return { total, groups };
+  return { total, groups, nextNotes };
 }
 
 /** 用户选择「覆盖」：软删除检测到的旧记录，并重算受影响账户余额。 */

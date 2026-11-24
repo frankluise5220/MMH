@@ -17,7 +17,9 @@ export const runtime = "nodejs";
  *   - action=delete        ：用户选了「覆盖」，软删除这些记录（只认上面检测出来的 id）。
  *
  * Body: { items, action?: "check" | "delete", recordIds?: string[] }
- * Response: { ok: true, total, groups } | { ok: true, deleted }
+ * Response: { ok: true, total, groups } | { ok: true, deleted, total, groups, nextNotes }
+ * - nextNotes: [{ index, note }]，覆盖（delete）时返回；旧记录备注与新备注不一致的，
+ *   note 是「新备注；旧备注」，客户端写回 items[index].remark 后再提交导入。
  *
  * 为什么单独一个接口，而不是塞进 /statement/import：明细页导入是分批提交的，
  * 单批只看到 1/10 的数据，重复判断会漏；这里一次拿到全部行，判定才是全量的。
@@ -47,7 +49,14 @@ export async function POST(req: NextRequest) {
       (id): id is string => typeof id === "string" && allowed.has(id),
     );
     const deleted = await deleteStatementImportDuplicates(householdId, ids);
-    return NextResponse.json({ ok: true, deleted, total: detected.total, groups: detected.groups });
+    // nextNotes：覆盖后新记录该用的备注（旧备注追加到新备注后面），由客户端写回 items 再提交导入。
+    return NextResponse.json({
+      ok: true,
+      deleted,
+      total: detected.total,
+      groups: detected.groups,
+      nextNotes: detected.nextNotes,
+    });
   }
 
   return NextResponse.json({ ok: true, total: detected.total, groups: detected.groups });

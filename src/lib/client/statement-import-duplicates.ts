@@ -21,6 +21,9 @@ type DuplicateGroup = {
   recordIds: string[];
 };
 
+/** 服务端在「覆盖」时算好的备注：旧备注与新备注不一致就追加到新备注后面。 */
+type DuplicateMergedNote = { index: number; note: string };
+
 export type DuplicateGuardResult = "proceed" | "cancel";
 
 export async function guardStatementDuplicateImport(
@@ -59,11 +62,20 @@ export async function guardStatementDuplicateImport(
 
   const recordIds = groups.flatMap((group) => group.recordIds ?? []);
   try {
-    await fetch("/api/v1/statement/import/duplicates", {
+    const res = await fetch("/api/v1/statement/import/duplicates", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ items, action: "delete", recordIds }),
     });
+    const result = await res.json().catch(() => null) as { nextNotes?: DuplicateMergedNote[] } | null;
+    // 覆盖后把旧备注追到新记录后面（旧备注是用户手工补过的内容，不能随覆盖丢失）。
+    // 直接替换数组元素而不是改原对象，避免把预览里的行一起改脏。
+    for (const entry of Array.isArray(result?.nextNotes) ? result!.nextNotes : []) {
+      if (!Number.isInteger(entry.index) || typeof entry.note !== "string") continue;
+      const current = items[entry.index];
+      if (!current) continue;
+      items[entry.index] = { ...current, remark: entry.note };
+    }
   } catch {
     // 删除失败时仍然继续：宁可多几条，也不要在用户点过覆盖之后什么都不导入。
   }
