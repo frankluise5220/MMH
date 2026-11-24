@@ -1,5 +1,6 @@
 "use client";
 
+import { SpriteIcon } from "./IconSprite";
 import {
   isValidElement,
   useCallback,
@@ -125,6 +126,55 @@ const ROW_ACTION_ICON_RATIO = 0.6;
  */
 export const ROW_ACTION_BUTTON_BOX_CLASS =
   "flex h-[var(--mmh-row-action-btn,20px)] w-[var(--mmh-row-action-btn,20px)] shrink-0 items-center justify-center rounded border transition-colors [&>svg]:h-[var(--mmh-row-action-icon,12px)] [&>svg]:w-[var(--mmh-row-action-icon,12px)]";
+
+/**
+ * 行操作按钮的懒挂载壳。
+ *
+ * 一套行操作 = 3~5 个 `<button>` + 每个一份完整 `<svg>`（lucide 不做 sprite），
+ * 而这些 DOM 在首屏 60 行里 100% 是看不见的（用户只会悬停其中一行）。
+ * 所以桌面指针设备下：这一行从未被悬停/聚焦过时只输出一个等宽占位，
+ * 首次 mouseenter / focusin 才把真正的按钮挂上来（挂上后不再卸载，
+ * 免得下拉菜单打开时鼠标移出去把按钮连同菜单一起卸掉）。
+ *
+ * 触屏（无 hover 能力）必须常驻：那里没有 hover，否则按钮永远出不来。
+ * 占位高度取 `--mmh-row-action-btn`，与按钮同高，不改变行高。
+ */
+function RowActionsMount({ children }: { children: ReactNode }) {
+  const hostRef = useRef<HTMLSpanElement>(null);
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    if (mounted) return;
+    const host = hostRef.current;
+    const row = host?.closest("tr");
+    if (!row) return;
+    const hoverCapable = typeof window.matchMedia === "function"
+      && window.matchMedia("(hover: hover) and (pointer: fine)").matches;
+    if (!hoverCapable) {
+      setMounted(true);
+      return;
+    }
+    const mount = () => setMounted(true);
+    row.addEventListener("mouseenter", mount, { once: true });
+    row.addEventListener("focusin", mount, { once: true });
+    return () => {
+      row.removeEventListener("mouseenter", mount);
+      row.removeEventListener("focusin", mount);
+    };
+  }, [mounted]);
+
+  return (
+    <span ref={hostRef} className="contents" data-row-actions-lazy={mounted ? "1" : "0"}>
+      {mounted ? children : (
+        <span
+          aria-hidden="true"
+          className="block h-[var(--mmh-row-action-btn,20px)] w-px shrink-0"
+          data-row-actions-placeholder
+        />
+      )}
+    </span>
+  );
+}
 
 const HEADER_PADDING_CLASS: Record<RowHeightMode, string> = {
   41: "px-3 py-1.5",
@@ -1285,7 +1335,7 @@ export function AdvancedDataTable<T>({
             className={`flex items-center justify-end gap-1${compactRows ? ROW_ACTIONS_COMPACT_CLASS : rowActionsMaxHeightClass}`}
             onClick={(event) => event.stopPropagation()}
           >
-            {rowActions(row, index)}
+            <RowActionsMount>{rowActions(row, index)}</RowActionsMount>
           </div>
         ),
       },
@@ -4102,7 +4152,7 @@ export function AdvancedDataTable<T>({
                             title={t("advancedTable.dragSort")}
                             aria-label={t("advancedTable.dragSort")}
                           >
-                            <GripVertical className="h-3.5 w-3.5" />
+                            <SpriteIcon name="grip-vertical" className="h-3.5 w-3.5" />
                           </button>
                         ) : null}
                         {selectable ? (

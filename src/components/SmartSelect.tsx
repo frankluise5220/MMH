@@ -1,5 +1,6 @@
 "use client";
 
+import { SpriteIcon } from "./IconSprite";
 import {
   useCallback,
   useEffect,
@@ -1820,7 +1821,7 @@ function MultiTriggerDisplay({
               }}
               className="inline-flex h-3 w-3 shrink-0 items-center justify-center rounded-full hover:bg-black/10"
             >
-              <X className="h-2.5 w-2.5" />
+              <SpriteIcon name="x" className="h-2.5 w-2.5" />
             </button>
           ) : null}
         </span>

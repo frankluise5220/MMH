@@ -2,6 +2,7 @@ import "./globals.css";
 import Script from "next/script";
 import type { Metadata, Viewport } from "next";
 import { cookies } from "next/headers";
+import { IconSprite } from "@/components/IconSprite";
 import { ModalDragController } from "@/components/ModalDragController";
 import { PwaServiceWorkerRegistration } from "@/components/PwaServiceWorkerRegistration";
 import { ClientLogCollector } from "@/components/ClientLogCollector";
@@ -254,6 +255,7 @@ export default async function RootLayout({
         suppressHydrationWarning
         className="antialiased h-screen overflow-x-hidden overflow-y-hidden"
       >
+        <IconSprite />
         {gatewayPrefixScript ? (
           <Script
             id="gateway-prefix"

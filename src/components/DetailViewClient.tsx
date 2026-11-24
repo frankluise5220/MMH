@@ -3,7 +3,8 @@
 import { replaceCurrentRouteUrl } from "@/lib/client/route-url-sync";
 
 import { useCallback, useState, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode, type MouseEvent } from "react";
-import { Paperclip, X } from "lucide-react";
+import { Paperclip } from "lucide-react";
+import { SpriteIcon } from "./IconSprite";
 import { formatDateDisplay, formatDateUtc as localDateKey, toNumber, todayDateBusinessYmd } from "@/lib/date-utils";
 import { formatCurrencyMoney } from "@/lib/format";
 import { getColorSchemeFromCookie, pnlColor } from "@/lib/client/colors";
@@ -2003,7 +2004,7 @@ export function DetailViewClient({
                       }}
                       className="inline-flex h-3 w-3 shrink-0 items-center justify-center rounded-full hover:bg-black/10"
                     >
-                      <X className="h-2.5 w-2.5" />
+                      <SpriteIcon name="x" className="h-2.5 w-2.5" />
                     </button>
                   ) : null}
                 </span>
