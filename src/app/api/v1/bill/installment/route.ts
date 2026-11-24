@@ -10,6 +10,8 @@
  *   totalRuns: number (2-120)
  *   rateType: "period_fee" | "annual_interest"
  *   rate: number (0-100)
+ *   principalOverrides?: number[], per-period principal schedule, length must equal totalRuns
+ *                      and the sum must equal amount; omitted = equal split
  *
  * Returns { ok: true, data } or { ok: false, error }.
  */
@@ -17,7 +19,10 @@ import { AccountKind, CreditCardInstallmentSourceType } from "@prisma/client";
 import { NextResponse } from "next/server";
 
 import { billingDayAtDate, creditBillUnpaidAmount } from "@/lib/credit/billing";
-import { type CreditCardInstallmentRateType } from "@/lib/credit/installment";
+import {
+  normalizeInstallmentPrincipalOverrides,
+  type CreditCardInstallmentRateType,
+} from "@/lib/credit/installment";
 import { prisma } from "@/lib/db/prisma";
 import { ensureBankInstallmentExpenseCategory } from "@/lib/default-categories";
 import { toStatementMonth } from "@/lib/date-utils";
@@ -94,6 +99,28 @@ export async function POST(req: Request) {
     }
     if (!firstPaymentDate) {
       return NextResponse.json({ ok: false, code: "INVALID_FIRST_PAYMENT_DATE", error: "首期入账日期格式不正确" }, { status: 400 });
+    }
+
+    // 每期本金自定义（用户逐期调整）：期数必须对齐、逐期非负、合计必须等于分期金额。
+    // 前端已经拦过一遍，这里再拦是为了防绕过（接口可直接调用）。
+    let principalOverrides: number[] | null = null;
+    if (Array.isArray(body.principalOverrides) && body.principalOverrides.length > 0) {
+      try {
+        principalOverrides = normalizeInstallmentPrincipalOverrides({
+          overrides: body.principalOverrides.map((value) => Number(value)),
+          principal: amount,
+          totalRuns,
+        });
+      } catch (error) {
+        return NextResponse.json(
+          {
+            ok: false,
+            code: "INVALID_PRINCIPAL_SCHEDULE",
+            error: error instanceof Error ? error.message : "每期本金合计必须等于分期金额",
+          },
+          { status: 400 },
+        );
+      }
     }
 
     const account = await prisma.account.findFirst({
@@ -200,6 +227,7 @@ export async function POST(req: Request) {
         firstPaymentDate,
         firstPaymentStatementMonth,
         label: `${statementMonth} 账单`,
+        principalOverrides,
       });
     });
 

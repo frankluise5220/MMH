@@ -413,6 +413,9 @@ model CreditCardInstallmentPlan {
   // 期供行是否还存在（用户能把某一期彻底删除，行没了就会被当成缺失又补一条），
   // 所以由计划自己记住推进到第几期：materialize 只落 installmentNo > 水位的期。
   materializedThroughNo Int                            @default(0)
+  // 每期本金自定义排期（JSON number[]，长度 = totalRuns，合计 = installmentPrincipal）。
+  // null = 等额分摊（老口径）；用户逐期改过金额时写入，期供行落库与各处预览都按它算。
+  principalScheduleJson String?
   tagIds               String?
   categoryId           String?
   categoryName         String?

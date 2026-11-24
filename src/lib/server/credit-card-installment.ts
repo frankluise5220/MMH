@@ -7,6 +7,8 @@ import {
 import {
   buildCreditCardInstallmentSchedule,
   creditInstallmentStatementMonthForDate,
+  normalizeInstallmentPrincipalOverrides,
+  parseInstallmentPrincipalSchedule,
   type CreditCardInstallmentRateType,
 } from "@/lib/credit/installment";
 import type { CreditCardBillingDayRule } from "@/lib/credit/billing";
@@ -36,6 +38,8 @@ type CreateCreditCardInstallmentInput = {
   category?: { id: string; name: string } | null;
   label: string;
   tagIds?: string[];
+  /** 每期本金（用户逐期调整）；不传/空数组 = 等额分摊。合计必须等于 principal。 */
+  principalOverrides?: readonly number[] | null;
 };
 
 /** 分期归属口径需要的账单日规则历史（按账户分组），两个入口共用。 */
@@ -184,6 +188,13 @@ export async function createCreditCardInstallmentPlan(
     throw new Error("分期金额必须大于 0");
   }
 
+  // 每期本金拆分：先规范化（期数一致、逐期非负、合计 == 分期金额），
+  // 再交给排期函数；只有真正自定义过（长度对得上）才落库，等额分摊存 null。
+  const principalOverrides = normalizeInstallmentPrincipalOverrides({
+    overrides: input.principalOverrides,
+    principal: input.principal,
+    totalRuns: input.totalRuns,
+  });
   const schedule = buildCreditCardInstallmentSchedule({
     principal: input.principal,
     totalRuns: input.totalRuns,
@@ -191,6 +202,7 @@ export async function createCreditCardInstallmentPlan(
     rate: input.rate,
     billingDay: input.billingDay,
     firstDate: input.firstPaymentDate,
+    principalOverrides,
   });
   const installmentDateLabel = formatDateUtc(input.adjustmentDate);
   const installmentKindLabel = input.sourceType === CreditCardInstallmentSourceType.statement ? "账单" : "消费";
@@ -212,6 +224,7 @@ export async function createCreditCardInstallmentPlan(
       // (materializeDueInstallmentPayments) instead of being pre-generated.
       billingDay: input.billingDay,
       firstPaymentDate: input.firstPaymentDate,
+      principalScheduleJson: principalOverrides ? JSON.stringify(principalOverrides) : null,
       tagIds: input.tagIds?.length ? JSON.stringify(input.tagIds) : null,
       categoryId: input.category?.id ?? null,
       categoryName: input.category?.name ?? null,
@@ -261,6 +274,24 @@ type InstallmentPaymentRow = {
   principal: number;
   interest: number;
 };
+
+/**
+ * 计划上的每期本金排期：坏数据（期数对不上、合计漂移）一律退回等额分摊，
+ * 不让一条脏计划把整批落库（runDueSystemTasks 里同批其它计划）带崩。
+ */
+function safeInstallmentPrincipalOverrides(
+  raw: string | null,
+  principal: number,
+  totalRuns: number,
+): number[] | null {
+  const parsed = parseInstallmentPrincipalSchedule(raw);
+  if (!parsed) return null;
+  try {
+    return normalizeInstallmentPrincipalOverrides({ overrides: parsed, principal, totalRuns });
+  } catch {
+    return null;
+  }
+}
 
 function parsePlanTagIds(raw: string | null): string[] {
   if (!raw) return [];
@@ -333,6 +364,7 @@ export async function materializeDueInstallmentPayments(
       firstPaymentDate: true,
       firstStatementMonth: true,
       materializedThroughNo: true,
+      principalScheduleJson: true,
       tagIds: true,
       categoryId: true,
       categoryName: true,
@@ -364,6 +396,12 @@ export async function materializeDueInstallmentPayments(
       rate: Number(plan.rate),
       billingDay,
       firstDate,
+      // 用户逐期调整过本金时按计划里存的排期落库，否则等额分摊。
+      principalOverrides: safeInstallmentPrincipalOverrides(
+        plan.principalScheduleJson,
+        Number(plan.installmentPrincipal),
+        plan.totalRuns,
+      ),
     });
     const dueRows: InstallmentPaymentRow[] = schedule
       .filter((row) => row.installmentNo > watermark && row.date.getTime() <= asOf.getTime())

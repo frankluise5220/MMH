@@ -45,6 +45,61 @@ function addMonthsUtc(date: Date, offset: number) {
   return new Date(Date.UTC(targetYear, targetMonth, Math.min(date.getUTCDate(), lastDay)));
 }
 
+/**
+ * 每期本金可自定义（用户 2026-11-24 口径）：拆分方式由用户逐期填写，
+ * 唯一硬约束是「各期本金合计 = 分期金额」。
+ *
+ * 返回 null 表示未自定义（走等额分摊 + 末期承接尾差的老口径）。
+ * 传入非法数组时抛错，让调用方在保存前就把问题暴露给用户。
+ */
+export function coerceInstallmentPrincipalOverrides(params: {
+  overrides: readonly number[] | null | undefined;
+  totalRuns: number;
+}): number[] | null {
+  const raw = params.overrides;
+  if (!raw || raw.length === 0) return null;
+  const totalRuns = Math.floor(params.totalRuns);
+  if (!Number.isInteger(totalRuns) || totalRuns < 1) throw new Error("分期期数应为 2 至 120 期");
+  if (raw.length !== totalRuns) throw new Error("每期本金的期数与分期期数不一致");
+  const normalized = raw.map((value) => roundMoney(Number(value)));
+  if (normalized.some((value) => !Number.isFinite(value) || value < 0)) {
+    throw new Error("每期本金必须是不小于 0 的金额");
+  }
+  return normalized;
+}
+
+export function normalizeInstallmentPrincipalOverrides(params: {
+  overrides: readonly number[] | null | undefined;
+  principal: number;
+  totalRuns: number;
+}): number[] | null {
+  const normalized = coerceInstallmentPrincipalOverrides({
+    overrides: params.overrides,
+    totalRuns: params.totalRuns,
+  });
+  if (!normalized) return null;
+  const principal = roundMoney(params.principal);
+  const sum = roundMoney(normalized.reduce((total, value) => total + value, 0));
+  if (Math.abs(roundMoney(sum - principal)) >= 0.005) {
+    throw new Error(`每期本金合计 ${sum.toFixed(2)} 与分期金额 ${principal.toFixed(2)} 不一致`);
+  }
+  return normalized;
+}
+
+/** 计划上存的每期本金排期（JSON number[]），坏数据一律当「未自定义」。 */
+export function parseInstallmentPrincipalSchedule(raw: string | null | undefined): number[] | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed) || parsed.length === 0) return null;
+    const values = parsed.map((item) => Number(item));
+    if (values.some((value) => !Number.isFinite(value) || value < 0)) return null;
+    return values.map((value) => roundMoney(value));
+  } catch {
+    return null;
+  }
+}
+
 export function buildCreditCardInstallmentSchedule(params: {
   principal: number;
   totalRuns: number;
@@ -53,6 +108,8 @@ export function buildCreditCardInstallmentSchedule(params: {
   billingDay: number;
   firstDate: Date;
   billingDayTxPeriod?: string | null;
+  /** 每期本金（逐期拆分）；不传则等额分摊。 */
+  principalOverrides?: readonly number[] | null;
 }): CreditCardInstallmentScheduleRow[] {
   const principal = roundMoney(params.principal);
   const totalRuns = Math.floor(params.totalRuns);
@@ -60,6 +117,12 @@ export function buildCreditCardInstallmentSchedule(params: {
   if (!Number.isFinite(principal) || principal <= 0) throw new Error("分期金额必须大于 0");
   if (!Number.isInteger(totalRuns) || totalRuns < 2 || totalRuns > 120) throw new Error("分期期数应为 2 至 120 期");
   if (!Number.isFinite(rate) || rate < 0 || rate > 100) throw new Error("费率应为 0 至 100");
+  // 排期只做「形状」校验（期数/非负），合计是否等于分期金额由 normalize 与调用方把关：
+  // 编辑中的表格要能实时显示「还差多少」，不能一输入就先抛错。
+  const overrides = coerceInstallmentPrincipalOverrides({
+    overrides: params.principalOverrides,
+    totalRuns,
+  });
 
   const rows: CreditCardInstallmentScheduleRow[] = [];
   const basePrincipal = roundMoney(principal / totalRuns);
@@ -81,7 +144,15 @@ export function buildCreditCardInstallmentSchedule(params: {
     let principalPart: number;
     let interest: number;
 
-    if (params.rateType === "annual_interest" && exactAnnualPayment) {
+    if (overrides) {
+      // 自定义拆分：本金按用户填的逐期金额，利息仍按剩余本金/原始本金的口径算，
+      // 所以「期供」会随本金拆分变化（提前多还本金 → 年化口径的利息变少）。
+      principalPart = overrides[index] ?? 0;
+      interest = params.rateType === "period_fee"
+        ? roundMoney(principal * rate / 100)
+        : roundMoney(remainingPrincipal * (rate / 100 / 12));
+      remainingPrincipal = roundMoney(Math.max(0, remainingPrincipal - principalPart));
+    } else if (params.rateType === "annual_interest" && exactAnnualPayment) {
       interest = roundMoney(remainingPrincipal * (rate / 100 / 12));
       principalPart = isLast
         ? roundMoney(remainingPrincipal)
@@ -124,6 +195,8 @@ export function creditInstallmentAnnualizedRate(params: {
   totalRuns: number;
   rateType: CreditCardInstallmentRateType;
   rate: number;
+  /** 每期本金（逐期拆分）；不传则等额分摊。 */
+  principalOverrides?: readonly number[] | null;
 }): number | null {
   const principal = roundMoney(params.principal);
   const totalRuns = Math.floor(params.totalRuns);
@@ -135,14 +208,27 @@ export function creditInstallmentAnnualizedRate(params: {
   if (rate === 0) return 0;
 
   // 与 buildCreditCardInstallmentSchedule 的 period_fee 分支同口径：
-  // 手续费每期固定 = 原始本金 × 费率，本金等额分摊、末期承接尾差。
+  // 手续费每期固定 = 原始本金 × 费率，本金按用户拆分（未拆分则等额 + 末期承接尾差）。
   const periodFee = roundMoney(principal * rate / 100);
+  // 年化只是展示口径：拆分数据不合法时退回等额分摊，不要让整页报错。
+  let overrides: number[] | null = null;
+  try {
+    overrides = normalizeInstallmentPrincipalOverrides({
+      overrides: params.principalOverrides,
+      principal,
+      totalRuns,
+    });
+  } catch {
+    overrides = null;
+  }
   const basePrincipal = roundMoney(principal / totalRuns);
   const payments: number[] = [];
   let allocatedPrincipal = 0;
   for (let index = 0; index < totalRuns; index += 1) {
     const isLast = index === totalRuns - 1;
-    const principalPart = isLast ? roundMoney(principal - allocatedPrincipal) : basePrincipal;
+    const principalPart = overrides
+      ? overrides[index] ?? 0
+      : isLast ? roundMoney(principal - allocatedPrincipal) : basePrincipal;
     allocatedPrincipal = roundMoney(allocatedPrincipal + principalPart);
     payments.push(roundMoney(principalPart + periodFee));
   }

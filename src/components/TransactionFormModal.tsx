@@ -676,6 +676,9 @@ export function TransactionFormModal({
   const [installmentTotal, setInstallmentTotal] = useState("12");
   const [installmentRateType, setInstallmentRateType] = useState<CreditCardInstallmentRateType>("period_fee");
   const [installmentRate, setInstallmentRate] = useState("0");
+  // 每期本金草稿（用户逐期调整）：空数组 = 等额分摊；长度必须等于期数。
+  // 只做展示与提交用，服务端仍按「合计 = 分期金额」二次校验。
+  const [installmentPrincipalDrafts, setInstallmentPrincipalDrafts] = useState<string[]>([]);
   const [accountId, setAccountId] = useState(defaultAccountId ?? "");
   // 选中账户的存款判定：分类下拉的存款白名单过滤依赖它（须在 accountId 声明之后）。
   const selectedAccountOption = useMemo(
@@ -1359,14 +1362,24 @@ export function TransactionFormModal({
     const billingDay = Number(account?.billingDay);
     const firstDate = dateInputToUtcDate(date);
     if (!firstDate || !Number.isFinite(billingDay) || billingDay < 1 || billingDay > 31) return null;
+    const totalRuns = Math.floor(Number(installmentTotal));
+    // 用户逐期改过本金才把草稿交给排期；草稿还没铺满期数时按等额显示。
+    // 输入中的空/非法值按 0 处理，让表格继续显示并把差额暴露在提示行里。
+    const drafts = installmentPrincipalDrafts.length === totalRuns
+      ? installmentPrincipalDrafts.map((value) => {
+        const parsed = Number(String(value).replace(/,/g, "").trim());
+        return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
+      })
+      : null;
     try {
       const rows = buildCreditCardInstallmentSchedule({
         principal: Number(installmentAmount),
-        totalRuns: Number(installmentTotal),
+        totalRuns,
         rateType: installmentRateType,
         rate: Number(installmentRate),
         billingDay,
         firstDate,
+        principalOverrides: drafts,
       });
       return {
         rows,
@@ -1375,7 +1388,28 @@ export function TransactionFormModal({
     } catch {
       return null;
     }
-  }, [accountId, accountMetaById, createInstallment, date, installmentAmount, installmentRate, installmentRateType, installmentTotal]);
+  }, [accountId, accountMetaById, createInstallment, date, installmentAmount, installmentPrincipalDrafts, installmentRate, installmentRateType, installmentTotal]);
+  // 每期本金合计 vs 分期金额：只有真正改过（草稿铺满期数）才提示与拦截提交。
+  const installmentPrincipalCheck = useMemo(() => {
+    if (!createInstallment || installmentLocked || !installmentPreview) return null;
+    const target = Math.round(Number(installmentAmount) * 100) / 100;
+    if (!Number.isFinite(target) || target <= 0) return null;
+    const sum = Math.round(installmentPreview.rows.reduce((total, row) => total + row.principal, 0) * 100) / 100;
+    const diff = Math.round((sum - target) * 100) / 100;
+    return {
+      edited: installmentPrincipalDrafts.length === installmentPreview.rows.length,
+      target,
+      sum,
+      diff,
+      balanced: Math.abs(diff) < 0.005,
+      schedule: installmentPreview.rows.map((row) => Math.round(row.principal * 100) / 100),
+    };
+  }, [createInstallment, installmentAmount, installmentLocked, installmentPreview, installmentPrincipalDrafts.length]);
+  // 改金额/期数/费率/账户/日期都会让「等额基准」变，逐期草稿一律作废（回到等额分摊），
+  // 否则会留下一份与分期金额对不上的旧排期。
+  useEffect(() => {
+    setInstallmentPrincipalDrafts([]);
+  }, [accountId, createInstallment, date, installmentAmount, installmentRate, installmentRateType, installmentTotal]);
 
   function openSpecialTransferTargetIfNeeded() {
     if (txType !== "transfer") return false;
@@ -2513,6 +2547,17 @@ export function TransactionFormModal({
       }
       formData.set("tagIds", JSON.stringify(selectedTagIds));
       if (txType === "expense" && createInstallment && !installmentLocked) {
+        // 逐期本金可改，但确认时合计必须等于分期金额（用户 2026-11-24 口径）。
+        if (installmentPrincipalCheck?.edited) {
+          if (!installmentPrincipalCheck.balanced) {
+            window.alert(t("txForm.alert.installmentPrincipalsMismatch", {
+              sum: installmentPrincipalCheck.sum.toFixed(2),
+              target: installmentPrincipalCheck.target.toFixed(2),
+            }));
+            return;
+          }
+          formData.set("installmentPrincipals", JSON.stringify(installmentPrincipalCheck.schedule));
+        }
         formData.set("createInstallment", "true");
         formData.set("installmentAmount", installmentAmount);
         formData.set("installmentTotal", installmentTotal);
@@ -3160,29 +3205,75 @@ export function TransactionFormModal({
                             ) : null}
                           </div>
                           {installmentPreview ? (
-                            <div className="max-h-48 overflow-auto rounded-md border border-slate-200">
-                              <table className="min-w-full text-xs tabular-nums">
-                                <thead className="sticky top-0 bg-slate-50 text-slate-500">
-                                  <tr>
-                                    <th className="px-2 py-1 text-left font-medium">{t("txForm.periods")}</th>
-                                    <th className="px-2 py-1 text-left font-medium">{t("detail.column.date")}</th>
-                                    <th className="px-2 py-1 text-right font-medium">{t("txForm.principal")}</th>
-                                    <th className="px-2 py-1 text-right font-medium">{installmentRateType === "annual_interest" ? t("txForm.interest") : t("txForm.fee")}</th>
-                                    <th className="px-2 py-1 text-right font-medium">{t("txForm.dueAmount")}</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {installmentPreview.rows.map((row) => (
-                                    <tr key={row.installmentNo} className="border-t border-slate-100">
-                                      <td className="px-2 py-1 text-slate-600">{row.installmentNo}/{installmentTotal}</td>
-                                      <td className="px-2 py-1 text-slate-600">{row.date.toISOString().slice(0, 10)}</td>
-                                      <td className="px-2 py-1 text-right text-slate-700">{row.principal.toFixed(2)}</td>
-                                      <td className="px-2 py-1 text-right text-slate-700">{row.interest.toFixed(2)}</td>
-                                      <td className="px-2 py-1 text-right font-medium text-slate-800">{row.payment.toFixed(2)}</td>
+                            <div className="space-y-1">
+                              <div className={`flex flex-wrap items-center justify-between gap-2 text-xs ${installmentPrincipalCheck?.edited && !installmentPrincipalCheck.balanced ? "text-red-600" : "text-slate-500"}`}>
+                                {installmentPrincipalCheck?.edited ? (
+                                  <span className="tabular-nums">
+                                    {t("txForm.installmentPrincipalTotal", {
+                                      sum: installmentPrincipalCheck.sum.toFixed(2),
+                                      target: installmentPrincipalCheck.target.toFixed(2),
+                                    })}
+                                    {installmentPrincipalCheck.balanced
+                                      ? null
+                                      : ` · ${t("txForm.installmentPrincipalDiff", { diff: Math.abs(installmentPrincipalCheck.diff).toFixed(2) })}`}
+                                  </span>
+                                ) : (
+                                  <span>{installmentLocked ? t("txForm.installmentAlreadySet") : t("txForm.installmentPrincipalEditHint")}</span>
+                                )}
+                                {installmentLocked ? null : (
+                                  <button
+                                    type="button"
+                                    onClick={() => setInstallmentPrincipalDrafts([])}
+                                    disabled={!installmentPrincipalCheck?.edited}
+                                    className="text-xs text-slate-500 underline disabled:cursor-not-allowed disabled:no-underline disabled:opacity-50"
+                                  >
+                                    {t("txForm.installmentPrincipalReset")}
+                                  </button>
+                                )}
+                              </div>
+                              <div className="max-h-48 overflow-auto rounded-md border border-slate-200">
+                                <table className="min-w-full text-xs tabular-nums">
+                                  <thead className="sticky top-0 bg-slate-50 text-slate-500">
+                                    <tr>
+                                      <th className="px-2 py-1 text-left font-medium">{t("txForm.periods")}</th>
+                                      <th className="px-2 py-1 text-left font-medium">{t("detail.column.date")}</th>
+                                      <th className="px-2 py-1 text-right font-medium">{t("txForm.principal")}</th>
+                                      <th className="px-2 py-1 text-right font-medium">{installmentRateType === "annual_interest" ? t("txForm.interest") : t("txForm.fee")}</th>
+                                      <th className="px-2 py-1 text-right font-medium">{t("txForm.dueAmount")}</th>
                                     </tr>
-                                  ))}
-                                </tbody>
-                              </table>
+                                  </thead>
+                                  <tbody>
+                                    {installmentPreview.rows.map((row) => (
+                                      <tr key={row.installmentNo} className="border-t border-slate-100">
+                                        <td className="px-2 py-1 text-slate-600">{row.installmentNo}/{installmentTotal}</td>
+                                        <td className="px-2 py-1 text-slate-600">{row.date.toISOString().slice(0, 10)}</td>
+                                        <td className="px-2 py-1 text-right text-slate-700">
+                                          {installmentLocked ? row.principal.toFixed(2) : (
+                                            <input
+                                              type="text"
+                                              inputMode="decimal"
+                                              aria-label={`${t("txForm.principal")} ${row.installmentNo}`}
+                                              value={
+                                                installmentPrincipalCheck?.edited
+                                                  ? installmentPrincipalDrafts[row.installmentNo - 1] ?? ""
+                                                  : row.principal.toFixed(2)
+                                              }
+                                              onChange={(event) => {
+                                                const next = installmentPreview.rows.map((item) => item.principal.toFixed(2));
+                                                next[row.installmentNo - 1] = event.target.value;
+                                                setInstallmentPrincipalDrafts(next);
+                                              }}
+                                              className="w-24 rounded border border-slate-200 px-1 py-0.5 text-right text-xs tabular-nums text-slate-800 focus:border-slate-400 focus:outline-none"
+                                            />
+                                          )}
+                                        </td>
+                                        <td className="px-2 py-1 text-right text-slate-700">{row.interest.toFixed(2)}</td>
+                                        <td className="px-2 py-1 text-right font-medium text-slate-800">{row.payment.toFixed(2)}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
                             </div>
                           ) : null}
                     </div>

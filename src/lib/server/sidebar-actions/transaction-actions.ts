@@ -12,7 +12,7 @@ import {
   recalcAndSaveAccountBalance,
   type EntryBalanceChange,
 } from "@/lib/server/account-balance";
-import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
+import { CREDIT_BILL_IMPACT_SELECT, invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { depositLotBelongsToAccount } from "@/lib/server/deposit-lot-options";
 import { isDepositRedemptionDateAllowed, loadDepositLotBalance, loadLatestDepositInterestDate } from "@/lib/server/deposit-lot-balance";
 import { prepareEntryUndo, saveCreatedEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
@@ -65,7 +65,10 @@ import {
   normalizeDepositInterestPayoutInput,
   parseDepositInterestPayout,
 } from "@/lib/deposit-interest-payout";
-import type { CreditCardInstallmentRateType } from "@/lib/credit/installment";
+import {
+  normalizeInstallmentPrincipalOverrides,
+  type CreditCardInstallmentRateType,
+} from "@/lib/credit/installment";
 
 /**
  * Fund-shell product types (fund / money / metal / wealth) are rendered by
@@ -75,6 +78,33 @@ import type { CreditCardInstallmentRateType } from "@/lib/credit/installment";
 function isFundShellProductType(formData: FormData) {
   const fundProductType = String(formData.get("fundProductType") ?? "").trim();
   return fundProductType === "fund" || fundProductType === "money" || fundProductType === "metal" || fundProductType === "wealth" || fundProductType === "advisor";
+}
+
+/**
+ * 表单里的每期本金拆分（installmentPrincipals = JSON number[]）。
+ * 空值 = 等额分摊；非空时必须期数与分期期数一致、逐期非负、合计等于分期金额，
+ * 否则抛本地化错误，不让用户以为改过的金额被保存了。
+ */
+function resolveInstallmentPrincipals(params: {
+  raw: FormDataEntryValue | null | undefined;
+  principal: number;
+  totalRuns: number;
+  t: (key: string) => string;
+}): number[] | null {
+  const text = String(params.raw ?? "").trim();
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (!Array.isArray(parsed)) throw new Error("invalid");
+    const values = parsed.map((item) => Number(item));
+    return normalizeInstallmentPrincipalOverrides({
+      overrides: values,
+      principal: params.principal,
+      totalRuns: params.totalRuns,
+    });
+  } catch {
+    throw new Error(params.t("sidebar.action.installmentPrincipalsInvalid"));
+  }
 }
 
 type TransferEntryKind = "transfer" | "liability";
@@ -638,10 +668,11 @@ export async function createTransaction(formData: FormData) {
   const amountRaw = parseMoneyInput(formData.get("amount") ?? null);
   const amountAbs = Math.abs(amountRaw);
   // 券 / 包抵扣：界面金额是消费总额，主交易只记实付（总额 − 券包）。
+  // 四舍五入到分，避免分期本金上限因为浮点误差把「实付金额」这类正好相等的值判成超限。
   const voucherAmount = ["expense", "transfer", "advance"].includes(type)
     ? parseVoucherAmount(formData.get("voucherAmount"), amountAbs)
     : 0;
-  const paidAmountAbs = Math.max(0, amountAbs - voucherAmount);
+  const paidAmountAbs = Math.max(0, round2(amountAbs - voucherAmount));
   const note = String(formData.get("note") ?? "").trim();
   const toNote = String(formData.get("toNote") ?? "").trim();
   const counterpartyInstitutionId = String(formData.get("counterpartyInstitutionId") ?? "").trim();
@@ -652,6 +683,8 @@ export async function createTransaction(formData: FormData) {
   const installmentTotal = Number.parseInt(String(formData.get("installmentTotal") ?? "0"), 10);
   const installmentRate = Number(String(formData.get("installmentRate") ?? "0"));
   const installmentRateType = String(formData.get("installmentRateType") ?? "period_fee") as CreditCardInstallmentRateType;
+  // 每期本金拆分（用户逐期调整分期金额）；不提交 = 等额分摊。
+  const installmentPrincipalsRaw = formData.get("installmentPrincipals");
 
   const date = dateStr && !Number.isNaN(new Date(dateStr).getTime()) ? new Date(dateStr) : new Date();
   const postedAt = type === "expense" || type === "income" || type === "transfer" ? (postedAtInput ?? date) : null;
@@ -827,8 +860,10 @@ export async function createTransaction(formData: FormData) {
             throw new Error(t("sidebar.action.investmentNoIncomeExpense"));
           }
         }
+        // 消费分期同样按实付分期（2026-11-24 用户口径）：券包抵扣后卡上欠的钱就是实付
+        // （paidAmountAbs），按总额分期会把券包金额变成一笔不存在的欠款。本金上限 = 实付。
         if (createInstallment && acc.kind !== AccountKind.bank_credit) throw new Error(t("sidebar.action.installmentCreditCardOnly"));
-        if (createInstallment && (installmentAmount <= 0 || installmentAmount > amountAbs)) {
+        if (createInstallment && (installmentAmount <= 0 || installmentAmount > paidAmountAbs)) {
           throw new Error(t("sidebar.action.installmentAmountInvalid"));
         }
         if (createInstallment && installmentRateType !== "annual_interest" && installmentRateType !== "period_fee") {
@@ -839,9 +874,7 @@ export async function createTransaction(formData: FormData) {
           (acc.kind === AccountKind.bank_credit || acc.kind === AccountKind.loan) && acc.billingDay
             ? toStatementMonth(creditBillEffectiveDate({ type, date, postedAt }) ?? date, acc.billingDay, acc.billingDayTxPeriod)
             : null;
-        // 券包只作用于普通支出；信用卡分期不拆实付，避免期供与券包相互干扰。
-        const appliedVoucher = createInstallment ? 0 : voucherAmount;
-        const paidAmountRaw = amountRaw < 0 ? -(Math.max(0, amountAbs - appliedVoucher)) : Math.max(0, amountAbs - appliedVoucher);
+        const paidAmountRaw = amountRaw < 0 ? -paidAmountAbs : paidAmountAbs;
         const duplicate = createInstallment
           ? null
           : await findRecentManualTransactionDuplicate(tx, {
@@ -879,7 +912,7 @@ export async function createTransaction(formData: FormData) {
             originalAmount: originalCurrencyInput && originalCurrencyInput !== recordCurrency ? originalAmountInput : null,
             locationId: locationIdInput,
             locationName: locationNameInput,
-            voucherAmount: appliedVoucher > 0 ? round2(appliedVoucher) : null,
+            voucherAmount: voucherAmount > 0 ? round2(voucherAmount) : null,
             ...{ householdId },
           },
         });
@@ -902,12 +935,20 @@ export async function createTransaction(formData: FormData) {
 
         if (createInstallment) {
           if (!statementMonth) throw new Error(t("sidebar.action.creditCardMissingBillingDay"));
+          const principalOverrides = resolveInstallmentPrincipals({
+            raw: installmentPrincipalsRaw,
+            principal: installmentAmount,
+            totalRuns: installmentTotal,
+            t,
+          });
           await createCreditCardInstallmentPlan(tx, {
             householdId,
             account: { id: acc.id, name: acc.name },
             sourceType: CreditCardInstallmentSourceType.transaction,
             sourceEntryId: created.id,
-            originalAmount: amountAbs,
+            // 原金额 = 实际支付（总额 − 券包），与主交易落库金额一致。
+            originalAmount: paidAmountAbs,
+            principalOverrides,
             principal: installmentAmount,
             totalRuns: installmentTotal,
             rateType: installmentRateType,
@@ -3425,6 +3466,8 @@ export async function updateTransactionFromDialog(formData: FormData) {
   const editInstallmentTotal = Number.parseInt(String(formData.get("installmentTotal") ?? "0"), 10);
   const editInstallmentRate = Number(String(formData.get("installmentRate") ?? "0"));
   const editInstallmentRateType = String(formData.get("installmentRateType") ?? "period_fee") as CreditCardInstallmentRateType;
+  // 每期本金拆分；不提交 = 等额分摊。
+  const editInstallmentPrincipalsRaw = formData.get("installmentPrincipals");
 
   const date = dateStr && !Number.isNaN(new Date(dateStr).getTime()) ? new Date(dateStr) : new Date();
   const postedAt = type === "expense" || type === "income" || type === "transfer" ? (postedAtInput ?? date) : null;
@@ -3452,6 +3495,11 @@ export async function updateTransactionFromDialog(formData: FormData) {
     const previousBalanceEntry = await prisma.txRecord.findUnique({
       where: { id: entryId },
       select: BALANCE_ENTRY_SELECT,
+    });
+    // 账单口径快照：只改备注/分类/标签时账单金额与账期都没变，不必重算整卡账单。
+    const billImpactBefore = await prisma.txRecord.findUnique({
+      where: { id: entryId },
+      select: CREDIT_BILL_IMPACT_SELECT,
     });
     let investRecalcAccountId: string | null = null;
     let investRecalcFundCode: string | null = null;
@@ -3945,13 +3993,18 @@ export async function updateTransactionFromDialog(formData: FormData) {
           ? toStatementMonth(creditBillEffectiveDate({ type, date, postedAt }) ?? date, acc.billingDay, acc.billingDayTxPeriod)
           : null;
 
+      // 支出编辑：界面金额是消费总额，主交易只记实付（总额 − 券包）。
+      // 消费分期同样按实付分期（与新建分期口径一致，2026-11-24 用户口径），
+      // 分期本金上限也是实付，否则券包金额会变成一笔不存在的欠款。
+      const editAppliedVoucher = type === "expense" ? voucherAmount : 0;
+      const editPaidAbs = Math.max(0, round2(amountAbs - editAppliedVoucher));
       // 编辑支出补设分期：沿用新建消费分期同样的守卫（仅信用卡 / 必须有账单月 /
-      // 金额在 0~消费总额之间 / 费率类型合法），并按 sourceEntryId 唯一约束去重。
+      // 金额在 0~实付之间 / 费率类型合法），并按 sourceEntryId 唯一约束去重。
       const editWantsInstallment = type === "expense" && editCreateInstallment;
       if (editWantsInstallment) {
         if (acc.kind !== AccountKind.bank_credit) throw new Error(t("sidebar.action.installmentCreditCardOnly"));
         if (!statementMonth) throw new Error(t("sidebar.action.creditCardMissingBillingDay"));
-        if (editInstallmentAmount <= 0 || editInstallmentAmount > amountAbs) {
+        if (editInstallmentAmount <= 0 || editInstallmentAmount > editPaidAbs) {
           throw new Error(t("sidebar.action.installmentAmountInvalid"));
         }
         if (editInstallmentRateType !== "annual_interest" && editInstallmentRateType !== "period_fee") {
@@ -3961,13 +4014,9 @@ export async function updateTransactionFromDialog(formData: FormData) {
           || await tx.creditCardInstallmentPlan.findFirst({ where: { sourceEntryId: entryId }, select: { id: true } });
         if (alreadyInstalled) throw new Error(t("txForm.installmentAlreadySet"));
       }
-      // 支出编辑：界面金额是消费总额，主交易只记实付（总额 − 券包）；
-      // 分期支出不拆券包（与新建分期口径一致）。支出不再生成券包收入分录，
-      // 存量分录在编辑时一律软删，避免主交易记实付后又多出一条券包收入。
-      const editAppliedVoucher = type === "expense" && !editWantsInstallment ? voucherAmount : 0;
-      const editPaidAmount = amountRaw < 0
-        ? -(Math.max(0, amountAbs - editAppliedVoucher))
-        : Math.max(0, amountAbs - editAppliedVoucher);
+      // 支出不再生成券包收入分录，存量分录在编辑时一律软删，
+      // 避免主交易记实付后又多出一条券包收入。
+      const editPaidAmount = amountRaw < 0 ? -editPaidAbs : editPaidAbs;
       if (type === "expense") {
         const existingVoucherEntry = await tx.txRecord.findFirst({
           where: { voucherSourceEntryId: entryId, source: "voucher", deletedAt: null },
@@ -4062,12 +4111,20 @@ export async function updateTransactionFromDialog(formData: FormData) {
       });
 
       if (editWantsInstallment) {
+        const editPrincipalOverrides = resolveInstallmentPrincipals({
+          raw: editInstallmentPrincipalsRaw,
+          principal: editInstallmentAmount,
+          totalRuns: editInstallmentTotal,
+          t,
+        });
         await createCreditCardInstallmentPlan(tx, {
           householdId: ctx.householdId,
           account: { id: acc.id, name: acc.name },
           sourceType: CreditCardInstallmentSourceType.transaction,
           sourceEntryId: entryId,
-          originalAmount: amountAbs,
+          // 原金额 = 实际支付（总额 − 券包），与主交易落库金额一致。
+          originalAmount: editPaidAbs,
+          principalOverrides: editPrincipalOverrides,
           principal: editInstallmentAmount,
           totalRuns: editInstallmentTotal,
           rateType: editInstallmentRateType,
@@ -4120,7 +4177,9 @@ export async function updateTransactionFromDialog(formData: FormData) {
       }
     }
     await applyEntryChangesToAccountBalances([{ entryId, previous: previousBalanceEntry }]).catch(() => {});
-    await invalidateCreditCardCycleCacheForAccountIds(touchedAccountIds).catch(() => {});
+    await invalidateCreditCardCycleCacheForAccountIds(touchedAccountIds, {
+      billImpact: { before: billImpactBefore, after: updatedEntry },
+    }).catch(() => {});
     // 普通收支 / 转账 / 垫付的编辑保存：不 purge 当前所在的 "/"（revalidatePath("/")
     // 会让 action 响应带回整棵首页的 RSC payload，用户看到的就是「改一条记录 =
     // 全页面刷新」）。明细行由 DetailViewClient 按当前页重取，余额由

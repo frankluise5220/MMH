@@ -530,6 +530,11 @@ function applyRuntimeMigrations(db) {
   // （materialize 是查计划整行，缺列直接抛错，账单页/计划任务页的分期也跟着空）。
   // 存量库该列取默认 0 即可：历史期由「这一期是否已有行」兜底判重，不会重发。
   addColumnIfMissing(db, "CreditCardInstallmentPlan", "materializedThroughNo", "INTEGER NOT NULL DEFAULT 0");
+  // 2026-11-24 每期本金自定义排期（用户逐期调整分期金额）。JSON number[]，NULL = 等额分摊。
+  // 与 prisma/migrations/20261124_add_installment_principal_schedule 同义。
+  // 漏掉这段：升级后的桌面库跑分期落地 / 打开账单分期会报
+  // "no such column: principalScheduleJson"（materialize 查计划整行）。
+  addColumnIfMissing(db, "CreditCardInstallmentPlan", "principalScheduleJson", "TEXT");
   // 2026-11-02 国债逆回购：顺手补上 0.1.81 漏掉的那一列。
   // 与 build-fnos-package.cjs 的 20261102_add_bond_instrument_kind 同义（老数据全是债券）。
   // 漏掉这段：升级后的桌面库缺 bond_transactions.instrumentKind，债券 / 逆回购 /

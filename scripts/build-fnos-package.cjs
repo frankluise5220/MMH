@@ -2530,6 +2530,19 @@ const MIGRATIONS = [
     },
   },
   {
+    // 每期本金自定义排期（2026-11-24 用户裁定）：允许逐期调整每期本金，保存时校验
+    // 各期合计 = 分期金额。列存 JSON number[]，NULL 表示等额分摊（老口径）。
+    // 漏掉这段：升级后的库跑分期落地 / 打开账单分期会报
+    // "no such column: principalScheduleJson"（materialize 查计划整行）。
+    version: "20261124_add_installment_principal_schedule",
+    introducedIn: "0.1.90",
+    description: "Add CreditCardInstallmentPlan.principalScheduleJson",
+    apply(db) {
+      if (!tableExists(db, "CreditCardInstallmentPlan")) return;
+      addColumnIfMissing(db, "CreditCardInstallmentPlan", "principalScheduleJson", "TEXT");
+    },
+  },
+  {
     // 贵金属行情（2026-11-13）：持仓新增 latestPrice / latestPriceDate / priceSource。
     // 三列可空，存量持仓没有行情时读取侧回退 unitPrice（最后一笔成交价）。
     // 漏掉这段：升级后的库读贵金属持仓会报 "no such column: latestPrice"。
