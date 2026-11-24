@@ -299,6 +299,16 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   // ledger this fnOS account is not bound in cannot sign in, so the card warns
   // instead of offering a button that could only fail with FNOS_USER_NOT_BOUND.
   const fnosTabUnavailable = loginMode === "fnos" && !!selectedHouseholdId && !fnosBoundScopes.has(selectedHouseholdId);
+  // WHY the picked ledger has no binding for this identity decides the wording.
+  // A ledger that is passwordless for a DIFFERENT fnOS account is still a
+  // fnOS-enabled ledger, so "该账簿无飞牛登录权限" reads as "this ledger lost fnOS
+  // login" to a user who just switched fnOS accounts (reported 2026-11-24). The
+  // ledger users in the picker carry their `fnosUid`, so the two cases can be
+  // told apart without another round trip: some user here holds a fnOS binding
+  // (it just isn't this identity's) vs. nobody does.
+  const selectedHouseholdBindsFnosAccount = selectedHouseholdId
+    ? systemUsers.some((user) => getLoginUserScopeId(user) === selectedHouseholdId && !!user.fnosUid)
+    : false;
   // The MMH membership password belongs to an *email* identity, and the card
   // already carries that email: either the account select (when the ledger knows
   // MMH identities) or the free-text email field. The reset panel must reuse it
@@ -1645,11 +1655,17 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                   </div>
                   {/* Mirror of the local tab's "this ledger has no local account"
                       notice: the picked ledger exists but this fnOS account is
-                      not bound in it, so there is nothing this card could check. */}
+                      not bound in it, so there is nothing this card could check.
+                      The body names the actual mismatch — "linked to a different
+                      fnOS account" is a very different message from "this ledger
+                      has no fnOS login", which is what users read when they had
+                      simply switched fnOS accounts. */}
                   {fnosTabUnavailable ? (
                     <div className="space-y-1 rounded-lg border border-amber-200 bg-amber-50/70 px-3 py-3">
                       <div className="text-sm font-semibold text-slate-800">{t("login.fnosNoLedgerTitle")}</div>
-                      <div className="text-xs leading-5 text-slate-600">{t("login.fnosNoLedger")}</div>
+                      <div className="text-xs leading-5 text-slate-600">
+                        {t(selectedHouseholdBindsFnosAccount ? "login.fnosNoLedgerOtherAccount" : "login.fnosNoLedgerUnbound")}
+                      </div>
                     </div>
                   ) : (
                   <div className="space-y-1">
