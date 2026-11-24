@@ -808,6 +808,14 @@ type AdvancedDataTableProps<T> = {
   onRowDoubleClick?: (row: T, index: number) => void;
   draggableRows?: boolean;
   rowDragDisabled?: (row: T, index: number) => boolean;
+  /**
+   * 握把位（控制列里拖拽手柄那一格）的自定义内容：返回非空即替换默认握把。
+   *
+   * 典型用法是「不可拖的行在该位置显示它自己的状态图标」——例如明细页的对账锁定行：
+   * 锁定后本来就拖不动（`rowDragDisabled` 返回 true），与其摆一个置灰的握把，
+   * 不如把解锁用的锁图标放在握把的位置上。返回 `null` / `undefined` 时仍渲染默认握把。
+   */
+  rowDragHandleContent?: (row: T, index: number, dragDisabled: boolean) => ReactNode;
   rowDropAllowed?: (sourceRow: T, targetRow: T, sourceIndex: number, targetIndex: number, position: AdvancedDataTableDropPosition) => boolean;
   rowDropTargetAtEnd?: (sourceRow: T, sourceIndex: number, orderedRows: T[]) => AdvancedDataTableRowDropTarget<T> | null;
   /**
@@ -1095,6 +1103,7 @@ export function AdvancedDataTable<T>({
   onRowDoubleClick,
   draggableRows = false,
   rowDragDisabled,
+  rowDragHandleContent,
   rowDropAllowed,
   rowDropTargetAtEnd,
   onRowReorder,
@@ -4141,19 +4150,21 @@ export function AdvancedDataTable<T>({
                     >
                       <div className="flex items-center justify-center gap-1">
                         {draggableRows ? (
-                          <button
-                            type="button"
-                            draggable={!dragDisabled}
-                            data-row-drag-handle
-                            onClick={(event) => event.stopPropagation()}
-                            onDragStart={(event) => handleRowDragStart(event, key, dragDisabled)}
-                            onDragEnd={handleRowDragEnd}
-                            className={`flex h-5 w-4 items-center justify-center rounded text-slate-300 transition hover:bg-slate-100 hover:text-slate-500 ${dragDisabled ? "cursor-not-allowed opacity-30" : "cursor-grab active:cursor-grabbing"}`}
-                            title={t("advancedTable.dragSort")}
-                            aria-label={t("advancedTable.dragSort")}
-                          >
-                            <SpriteIcon name="grip-vertical" className="h-3.5 w-3.5" />
-                          </button>
+                          rowDragHandleContent?.(row, index, dragDisabled) ?? (
+                            <button
+                              type="button"
+                              draggable={!dragDisabled}
+                              data-row-drag-handle
+                              onClick={(event) => event.stopPropagation()}
+                              onDragStart={(event) => handleRowDragStart(event, key, dragDisabled)}
+                              onDragEnd={handleRowDragEnd}
+                              className={`flex h-5 w-4 items-center justify-center rounded text-slate-300 transition hover:bg-slate-100 hover:text-slate-500 ${dragDisabled ? "cursor-not-allowed opacity-30" : "cursor-grab active:cursor-grabbing"}`}
+                              title={t("advancedTable.dragSort")}
+                              aria-label={t("advancedTable.dragSort")}
+                            >
+                              <SpriteIcon name="grip-vertical" className="h-3.5 w-3.5" />
+                            </button>
+                          )
                         ) : null}
                         {selectable ? (
                           <input

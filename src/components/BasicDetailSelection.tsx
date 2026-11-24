@@ -479,6 +479,7 @@ export function BasicDetailReconcileLockButton({
   reconciled,
   contextAccountId,
   asButton = true,
+  variant = "rowAction",
 }: {
   entryId: string;
   reconciled: boolean;
@@ -489,6 +490,14 @@ export function BasicDetailReconcileLockButton({
    * 与 `EntryAttachmentIndicator` 同一约定：嵌套时传 `false` 渲染 span。
    */
   asButton?: boolean;
+  /**
+   * `rowAction`（默认）= 操作列里的方框按钮。
+   *
+   * `dragHandle` = 顶替明细表的行首拖拽握把：几何尺寸与握把逐像素一致
+   * （20×16 的格子 + 14px 图标），只把颜色换成琥珀色，无边框、无底色，
+   * 所以控制格里「握把 + 勾选框」的排布不会因为多了把锁而变宽或变形。
+   */
+  variant?: "rowAction" | "dragHandle";
 }) {
   const { t } = useI18n();
   const [busy, setBusy] = useState(false);
@@ -527,8 +536,11 @@ export function BasicDetailReconcileLockButton({
     }
   }
 
-  const lockClassName =
-    `${ROW_ACTION_BUTTON_BOX_CLASS} border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100`;
+  // 握把位的样式逐条对齐 AdvancedDataTable 里的拖拽手柄（h-5 w-4 + h-3.5 图标），
+  // 只有 text 颜色不同，所以锁一出现不会把整列撑宽、也不会把勾选框挤歪。
+  const lockClassName = variant === "dragHandle"
+    ? "flex h-5 w-4 shrink-0 items-center justify-center rounded text-amber-500 transition hover:bg-amber-50 hover:text-amber-600 [&>svg]:h-3.5 [&>svg]:w-3.5 disabled:opacity-50"
+    : `${ROW_ACTION_BUTTON_BOX_CLASS} border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100`;
   const lockTitle = t("reconcile.unlockTitle");
   const lockIcon = <Lock />;
 
@@ -551,7 +563,11 @@ export function BasicDetailReconcileLockButton({
   return (
     <button
       type="button"
-      onClick={unlock}
+      onClick={(event) => {
+        // 现在这把锁画在行首控制格里（明细表握把位），点它不能顺带把整行勾选上。
+        event.stopPropagation();
+        void unlock();
+      }}
       disabled={busy}
       className={`${lockClassName} disabled:opacity-50`}
       title={lockTitle}

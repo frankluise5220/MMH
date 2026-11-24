@@ -2233,6 +2233,21 @@ export function DetailViewClient({
       }}
       draggableRows={draggableRows}
       rowDragDisabled={(entry) => Boolean(entry.readOnly) || !canManuallyReorderDetailEntry(entry)}
+      // 对账锁定的行本来就拖不动（见 canManuallyReorderDetailEntry），
+      // 锁图标直接顶替握把的位置，行首既能一眼看出「这行锁了」，也不用滑到行尾去解锁。
+      // 必须在这里判空再返回：`rowDragHandleContent` 返回的是 React 元素就一定会顶掉默认握把，
+      // 而 `BasicDetailReconcileLockButton` 在未锁定时内部 return null，元素本身仍算「有内容」，
+      // 直接返回它会让所有未锁定的行丢掉拖拽标记。
+      rowDragHandleContent={(entry) =>
+        isReconciledEntry(entry) ? (
+          <BasicDetailReconcileLockButton
+            entryId={entry.id}
+            reconciled
+            contextAccountId={reconcileAccountId}
+            variant="dragHandle"
+          />
+        ) : null
+      }
       rowDropAllowed={(source, target, _sourceIndex, _targetIndex, position) => canDropDetailEntry(source, target, position)}
       rowDropTargetAtEnd={rowDropTargetAtEnd}
       onRowReorder={(source, target, _sourceIndex, _targetIndex, position) => reorderEntryByDrag(source, target, position)}
@@ -2247,11 +2262,6 @@ export function DetailViewClient({
           : t("detailView.notLinked");
         return (
           <>
-            <BasicDetailReconcileLockButton
-              entryId={entry.id}
-              reconciled={isReconciledEntry(entry)}
-              contextAccountId={reconcileAccountId}
-            />
             <EntryAttachmentIndicator entry={entry} onClick={() => setAttachmentViewEntryId(entry.id)} />
             {shouldShowBusinessLinkStatus(entry) ? (
               <BusinessLinkActionButton
