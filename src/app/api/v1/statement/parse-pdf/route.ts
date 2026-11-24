@@ -28,6 +28,8 @@ export async function POST(req: Request) {
     const contentType = (req.headers.get("content-type") ?? "").toLowerCase();
     let buffer: Buffer;
     let filename = "";
+    /** 加密 PDF 的打开密码（农商行等电子流水默认加密，界面会让用户补这一项）。 */
+    let password = "";
 
     if (contentType.includes("multipart/form-data")) {
       const form = await req.formData().catch(() => null);
@@ -37,6 +39,8 @@ export async function POST(req: Request) {
       if (file.size > MAX_PDF_BYTES) {
         return fail("FILE_TOO_LARGE", `PDF 超过 ${Math.round(MAX_PDF_BYTES / 1024 / 1024)}MB，请拆分后再导入`, 413);
       }
+      const formPassword = form?.get("password");
+      password = typeof formPassword === "string" ? formPassword.trim().slice(0, 200) : "";
       filename = file.name || "statement.pdf";
       buffer = Buffer.from(await file.arrayBuffer());
     } else {
@@ -53,15 +57,15 @@ export async function POST(req: Request) {
       return fail("NOT_PDF", "这个文件不是 PDF（可能改过扩展名）");
     }
 
-    const pdf = await extractPdfContent(buffer);
-    if (pdf.error) {
-      const encrypted = /password|encrypt/i.test(pdf.error);
+    const pdf = await extractPdfContent(buffer, { password });
+    if (pdf.passwordRequired) {
       return fail(
-        encrypted ? "PDF_ENCRYPTED" : "PDF_PARSE_FAILED",
-        encrypted
-          ? "PDF 有打开密码，请先解除密码再导入"
-          : `PDF 解析失败：${pdf.error}`,
+        "PDF_ENCRYPTED",
+        password ? "PDF 打开密码不正确，请重新输入" : "PDF 有打开密码，请输入密码后再导入",
       );
+    }
+    if (pdf.error) {
+      return fail("PDF_PARSE_FAILED", `PDF 解析失败：${pdf.error}`);
     }
     if (!pdf.hasTextLayer && !pdf.text.trim()) {
       return fail(

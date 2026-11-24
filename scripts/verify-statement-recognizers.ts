@@ -40,6 +40,9 @@ import {
 } from "../src/lib/import-template-sample";
 import { parseEmlSheets, parseHtmlSheets } from "../src/lib/statement/eml-sheet-reader";
 import { readStatementSheetRows } from "../src/lib/statement/statement-sheet-reader";
+import { buildStatementTableText } from "../src/lib/mail/pdf";
+import { STATEMENT_IMPORT_FIELD_HEADERS } from "../src/lib/statement/header-catalog";
+import { parseStatementTemplateRows } from "../src/lib/statement/excel-preview";
 
 type Sheet = { sheetName: string; rows: string[][] };
 
@@ -491,6 +494,89 @@ check("邮箱链路 mail.html（已解码 HTML）走 parseHtmlSheets → sinopec
   assert.match(out.rows[1][10], /单价\(元\):7\.99/);
   assert.match(out.rows[1][10], /地点:扬州邗城站/);
   assert.doesNotMatch(out.rows[1][10], /持卡人|卡号|交易类型/);
+});
+
+// PDF 表格优先（农商行电子流水）：
+// 它的文字层是乱序的（「20241128 09:28:40苏KF17907原」+ 下一行「49.31元」），按行读会
+// 把备注里的 17907 当金额；getTable() 才是干净的 4 列。同时每页页脚
+// 「江苏扬州农村商业银行2026-11-24 19:05:12」会被拼进单元格、还会被列宽切成残片，
+// 必须靠文字层反推水印名清洗，不能写死银行名。
+const PDF_FOOTER = "江苏扬州农村商业银行2026-11-24 19:05:12";
+const PDF_TABLES: string[][][] = [[
+  ["江苏扬州农村商业银行交易流水"],
+  ["交易时间", "收入/支出金额", "商户类型", "备注"],
+  ["2024-11-29 10:03:27", "-49.31", "消费", "原20241128 09:28:40苏KF17907"],
+  ["2024-11-29 12:08:54", "12.50", "转账", `京东商城业务${PDF_FOOTER}`],
+  ["2024-11-30 08:31:02", "-230.00", "消费", "江苏扬州农村商业"],
+]];
+
+check("PDF 表格 → 规范 TSV：表头保留、非流水行丢弃、水印残片清空", () => {
+  const text = buildStatementTableText(PDF_TABLES, PDF_FOOTER);
+  assert.ok(text, "有「日期 + 金额」表头的表格应被接管");
+  const rows = text.split("\n").map((line) => line.split("\t"));
+  assert.deepEqual(rows[0], ["交易时间", "收入/支出金额", "商户类型", "备注"]);
+  assert.equal(rows.length - 1, 3, "标题行不占数据行");
+  assert.ok(
+    rows.slice(1).every((cells) => cells.every((cell) => !/江苏扬州农村商业/.test(cell))),
+    "页脚水印不能残留在任何单元格里",
+  );
+});
+
+check("PDF 表格 → 标准模板：备注里的 苏KF17907 不再冒领金额", () => {
+  const text = buildStatementTableText(PDF_TABLES, PDF_FOOTER)!;
+  const rows = text.split("\n").map((line) => line.split("\t"));
+  const items = parseStatementTemplateRows(rows, "", STATEMENT_IMPORT_FIELD_HEADERS, TEMPLATE_GUIDE_TITLE_HINTS);
+  assert.equal(items.length, 3);
+  // 标准模板把金额取绝对值、方向交给 type，所以这里比绝对值 + 方向关系。
+  assert.deepEqual(items.map((item) => item.amount), [49.31, 12.5, 230]);
+  assert.equal(items[0].type, items[2].type, "同为负数的两行方向应一致");
+  assert.notEqual(items[0].type, items[1].type, "负数与正数方向应相反");
+  assert.ok(!items.some((item) => Math.abs(item.amount) === 17907), "17907 是备注里的车牌，不是金额");
+});
+
+check("PDF 页眉卡号 → 补「账户」列（尾号2058 能匹配到已有信用卡）", () => {
+  // 页眉 `6228 **** 2058` 落在表格外，必须由文字层学出来补进 TSV，
+  // 否则整份流水没有账户，预览里逐条手选、尾号匹配也失效。
+  const text = buildStatementTableText(PDF_TABLES, `6228 **** 2058\n${PDF_FOOTER}`)!;
+  const rows = text.split("\n").map((line) => line.split("\t"));
+  assert.equal(rows[0].at(-1), "账户");
+  assert.ok(rows.slice(1).every((cells) => cells.at(-1) === "尾号2058"));
+});
+
+check("PDF 表格自带账户列时不重复追加", () => {
+  const tables: string[][][] = [[
+    ["交易时间", "收入/支出金额", "账户", "备注"],
+    ["2024-11-29 10:03:27", "37.21", "京东联名", "京东支付"],
+    ["2024-11-30 10:03:27", "22.22", "京东联名", "京东支付"],
+    ["2024-12-01 10:03:27", "11.11", "京东联名", "京东支付"],
+  ]];
+  const text = buildStatementTableText(tables, "6228 **** 2058")!;
+  const rows = text.split("\n").map((line) => line.split("\t"));
+  assert.deepEqual(rows[0], ["交易时间", "收入/支出金额", "账户", "备注"]);
+  assert.ok(rows.slice(1).every((cells) => cells[2] === "京东联名"));
+});
+
+check("PDF 表格不是流水时不接管（退回文字流）", () => {
+  const notStatement = [[["项目", "说明"], ["备注", "无"], ["合计", "1"]]];
+  assert.equal(buildStatementTableText(notStatement, ""), null);
+});
+
+check("信用卡账单（文字层带账单摘要）不被表格接管，专用模板照旧", () => {
+  // 摘要只在原文里，换成 4 列 TSV 会让专用模板看不到「本期应还」，
+  // 账期锁定与额度补档案全失效——新功能不能覆盖旧功能。
+  const text = `平安银行信用卡账单\n本期应还金额 1234.56\n到期还款日 2022-03-05\n${PDF_FOOTER}`;
+  assert.equal(buildStatementTableText(PDF_TABLES, text), null);
+});
+
+check("PDF 表格：备注里的「商户名 + 日期」不被当成页脚删掉", () => {
+  const tables: string[][][] = [[
+    ["交易时间", "收入/支出金额", "商户类型", "备注"],
+    ["2024-11-29 10:03:27", "-49.31", "消费", "京东商城业务2026-11-24 19:05:12"],
+    ["2024-11-29 12:08:54", "12.50", "转账", "京东商城业务"],
+    ["2024-11-30 08:31:02", "-230.00", "消费", "京东商城业务"],
+  ]];
+  const text = buildStatementTableText(tables, PDF_FOOTER)!;
+  assert.ok(text.includes("京东商城业务"), "商户名必须保留");
 });
 
 console.log(`\ncheck:recognizer ok（${assertionCount} 条断言）`);

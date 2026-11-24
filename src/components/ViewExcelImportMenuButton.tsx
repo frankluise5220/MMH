@@ -1180,6 +1180,8 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
   const [excelExportError, setExcelExportError] = useState("");
   const [busy, setBusy] = useState(false);
   const [processingFile, setProcessingFile] = useState(false);
+  // 加密 PDF（农商行等电子流水默认加密）：同一条导入链路补密码后重试，不当作失败。
+  const [pdfPasswordPrompt, setPdfPasswordPrompt] = useState<{ file: File; password: string; error: string } | null>(null);
   const [status, setStatus] = useState("");
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewItems, setPreviewItems] = useState<StatementImportPreviewItem[]>([]);
@@ -1263,7 +1265,7 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
     }
   }
 
-  async function handleImportFile(file: File) {
+  async function handleImportFile(file: File, pdfPassword?: string) {
     flushSync(() => {
       setOpen(false);
       setBusy(true);
@@ -1284,7 +1286,22 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
       // PDF 账单（信用卡电子账单等）：服务端抽文字 → 与 Excel 完全相同的识别/预览链路。
       // 邮件附件通道与本通道共用 extractPdfContent，只是文字来源不同。
       if (isPdfStatementFile(file)) {
-        const text = await extractPdfTextOnServer(file);
+        let text: string;
+        try {
+          text = await extractPdfTextOnServer(file, pdfPassword);
+        } catch (pdfError) {
+          // 加密 PDF 不是失败：弹密码框，用户补密码后整条链路重跑一遍。
+          if ((pdfError as { code?: string })?.code === "PDF_ENCRYPTED") {
+            setPdfPasswordPrompt({
+              file,
+              password: "",
+              error: pdfPassword ? t("viewImport.pdfPasswordIncorrect") : "",
+            });
+            setStatus("");
+            return;
+          }
+          throw pdfError;
+        }
         const latestRecognitionSamples = await refreshRecognitionSamples().catch(() => recognitionSamples);
         const categories = await loadImportCategories();
         const serverItems = await parseByServer(text);
@@ -1446,13 +1463,17 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
    * PDF 账单的文字抽取必须放服务端：pdf-parse 会连带 pdfjs 与原生 canvas，
    * 一旦进了 client bundle，页面直接编译失败。抽完的文字再走同一条识别链路。
    */
-  async function extractPdfTextOnServer(file: File) {
+  async function extractPdfTextOnServer(file: File, password?: string) {
     const form = new FormData();
     form.append("file", file);
+    if (password) form.append("password", password);
     const res = await fetch("/api/v1/statement/parse-pdf", { method: "POST", body: form });
-    const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; text?: string } | null;
+    const data = await res.json().catch(() => null) as { ok?: boolean; code?: string; error?: string; text?: string } | null;
     if (!res.ok || !data?.ok || !data.text) {
-      throw new Error(data?.error || t("viewImport.recognitionFailed"));
+      const message = data?.error || t("viewImport.recognitionFailed");
+      const error = new Error(message) as Error & { code?: string };
+      error.code = data?.code;
+      throw error;
     }
     return data.text;
   }
@@ -1663,6 +1684,54 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
               </div>
             </div>
           </div>
+        </ModalLayer>
+      ) : null}
+      {pdfPasswordPrompt ? (
+        <ModalLayer className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/45 px-4 py-6">
+          <form
+            className="w-full max-w-sm rounded-xl border border-slate-200 bg-white p-5 shadow-2xl"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const password = pdfPasswordPrompt.password.trim();
+              if (!password) {
+                setPdfPasswordPrompt({ ...pdfPasswordPrompt, error: t("viewImport.pdfPasswordEmpty") });
+                return;
+              }
+              const pending = pdfPasswordPrompt.file;
+              setPdfPasswordPrompt(null);
+              void handleImportFile(pending, password);
+            }}
+          >
+            <div className="text-sm font-semibold text-slate-800">{t("viewImport.pdfPasswordTitle")}</div>
+            <div className="mt-1 text-xs leading-5 text-slate-500">{t("viewImport.pdfPasswordHint")}</div>
+            <input
+              type="password"
+              autoFocus
+              autoComplete="off"
+              className="form-input mt-3 w-full text-sm"
+              value={pdfPasswordPrompt.password}
+              placeholder={t("viewImport.pdfPasswordPlaceholder")}
+              onChange={(event) => setPdfPasswordPrompt({ ...pdfPasswordPrompt, password: event.target.value })}
+            />
+            {pdfPasswordPrompt.error ? (
+              <div className="mt-1.5 text-xs text-red-600">{pdfPasswordPrompt.error}</div>
+            ) : null}
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50"
+                onClick={() => setPdfPasswordPrompt(null)}
+              >
+                {t("common.cancel")}
+              </button>
+              <button
+                type="submit"
+                className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+              >
+                {t("viewImport.pdfPasswordSubmit")}
+              </button>
+            </div>
+          </form>
         </ModalLayer>
       ) : null}
       <button

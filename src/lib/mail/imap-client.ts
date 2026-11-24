@@ -18,7 +18,30 @@ type ImapConfig = {
 };
 
 type MailListItem = { uid: number; subject: string; from: string; date: string; hash: string; /** 这封邮件所在的文件夹（跨文件夹搜索时才有值）。 */ mailbox?: string };
-export type MailAttachment = { id: string; filename: string; contentType: string; size: number; text?: string; parseError?: string };
+/**
+ * 附件文字抽取失败的原因码。
+ *
+ * 界面按 code 走三语提示；`parseError` 保留原文只作兜底，不要把英文长句直接甩给用户。
+ * `pdf_password_required` 是农商行这类「电子流水 PDF 默认加密」的常见情形：
+ * 密码在手机 App 的「交易流水打印 → 申请记录」里，用户输入后可以重试解密。
+ */
+export type MailAttachmentParseErrorCode =
+  | "pdf_password_required"
+  | "pdf_parse_failed"
+  | "pdf_no_text_layer"
+  | "spreadsheet_parse_failed";
+
+export type MailAttachment = {
+  id: string;
+  filename: string;
+  contentType: string;
+  size: number;
+  text?: string;
+  parseError?: string;
+  parseErrorCode?: MailAttachmentParseErrorCode;
+  /** 该 PDF 设了打开密码：前端应展示密码输入框，让用户补密码后重试。 */
+  passwordRequired?: boolean;
+};
 export type MailDetail = { uid: number; subject: string; from: string; date: string; text: string; html: string; attachments: MailAttachment[] };
 export type MailListMeta = {
   total: number;
@@ -1015,7 +1038,11 @@ function repairEmptyMailCharset(source: Buffer, decodedHtml: string): Buffer | n
   return Buffer.concat([Buffer.from(patchedHead, "latin1"), source.subarray(8 * 1024)]);
 }
 
-export async function fetchMailDetail(target: MailClient["client"] | MailClient, uid: number) {
+export async function fetchMailDetail(
+  target: MailClient["client"] | MailClient,
+  uid: number,
+  options: { pdfPassword?: string } = {},
+) {
   const client = "client" in target ? target.client : target;
   const downloaded = await withTimeout(
     client.download(String(uid), undefined, { uid: true }),
@@ -1053,20 +1080,36 @@ export async function fetchMailDetail(target: MailClient["client"] | MailClient,
 
     try {
       if (isPdf) {
-        const pdf = await extractPdfContent(content);
+        const pdf = await extractPdfContent(content, { password: options.pdfPassword });
         const text = pdf.text;
+        if (text) {
+          return {
+            id: String(index),
+            filename,
+            contentType,
+            size: attachment.size ?? content.length,
+            text,
+          };
+        }
+        // 加密 PDF 必须单独标记：前端要给出密码输入框，而不是「没有文字层」这种误导提示。
+        const passwordRequired = pdf.passwordRequired;
         return {
           id: String(index),
           filename,
           contentType,
           size: attachment.size ?? content.length,
-          text: text || undefined,
-          parseError: text
-            ? undefined
+          passwordRequired: passwordRequired || undefined,
+          parseErrorCode: passwordRequired
+            ? "pdf_password_required"
             : pdf.error
-            ? /password|encrypt/i.test(pdf.error)
-              ? "PDF is password-protected. Remove the password and import again."
-              : `PDF text extraction failed: ${pdf.error}`
+            ? "pdf_parse_failed"
+            : "pdf_no_text_layer",
+          parseError: passwordRequired
+            ? pdf.passwordIncorrect
+              ? "The PDF password is incorrect."
+              : "This PDF is password-protected."
+            : pdf.error
+            ? `PDF text extraction failed: ${pdf.error}`
             : "No text layer found: this PDF is likely a scanned image.",
         };
       }
@@ -1077,6 +1120,7 @@ export async function fetchMailDetail(target: MailClient["client"] | MailClient,
         contentType,
         size: attachment.size ?? content.length,
         text: text || undefined,
+        parseErrorCode: text ? undefined : "spreadsheet_parse_failed",
         parseError: text ? undefined : "No table text was extracted from the spreadsheet.",
       };
     } catch (error) {
@@ -1086,6 +1130,7 @@ export async function fetchMailDetail(target: MailClient["client"] | MailClient,
         filename,
         contentType,
         size: attachment.size ?? content.length,
+        parseErrorCode: isPdf ? "pdf_parse_failed" : "spreadsheet_parse_failed",
         parseError: isPdf
           ? `PDF text extraction failed: ${message || "unknown error"}`
           : "Spreadsheet reading failed. The file may be encrypted or malformed.",

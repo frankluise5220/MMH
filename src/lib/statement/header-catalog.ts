@@ -44,7 +44,8 @@ export const STATEMENT_IMPORT_FIELD_HEADERS: Record<StatementImportField, readon
   postedAt: ["入账日期", "到账日期", "入账时间", "到账时间", "入账日期时间", "到账日期时间", "实际入账时间", "实际到账时间", "postedAt", "postingTime", "Posting Date", "投稿日", "入帳日"],
   outflow: ["流出", "支出", "转出", "借方金额", "支出金额", "outflow", "Outflow", "出金"],
   inflow: ["流入", "收入", "转入", "贷方金额", "收入金额", "inflow", "Inflow", "入金"],
-  amount: ["金额", "交易金额", "发生额", "本币金额", "人民币金额", "amount", "Amount", "金額"],
+  // 「收入/支出金额」是农商行电子流水的合并金额列（负数=入账），不是收入、支出两列。
+  amount: ["金额", "交易金额", "发生额", "本币金额", "人民币金额", "收入/支出金额", "收入支出金额", "amount", "Amount", "金額"],
   sourceAccount: ["账户", "本方账户", "交易账户", "账号", "account", "fromAccount", "Account", "口座"],
   repaymentAccount: ["还款账户", "付款账户", "repaymentAccount", "Payment Account", "返済口座", "支払口座"],
   creditAccount: ["信用卡账户", "卡账户", "卡号末四位", "信用卡后四位", "信用卡末四位", "后四位", "末四位", "cardAccount", "cardLast4", "Credit Card Account", "クレジットカード口座"],

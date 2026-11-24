@@ -836,7 +836,16 @@ type ImportAccountMatchContext = {
   ownerName?: string | null;
 };
 
-export function createImportAccountMatcher<T extends ImportAccountMatchSource>(
+/**
+ * 匹配器缓存：构建一次要遍历全部账户（家底 273 个账户约 137ms）。
+ *
+ * 导入预览是按行调用解析器的（每行一次账户匹配 + 一次对向账户匹配），
+ * 从前每次都重建索引，140 行就是 15 秒的主线程同步计算 —— 浏览器直接弹
+ * 「页面无响应」。索引只依赖 accounts 数组，按数组身份缓存即可。
+ */
+const importAccountMatcherCache = new WeakMap<object, (accountName: string | undefined) => ImportAccountMatchResult<ImportAccountMatchSource>>();
+
+function buildImportAccountMatcher<T extends ImportAccountMatchSource>(
   accounts: T[],
   context: ImportAccountMatchContext = {},
 ) {
@@ -1322,6 +1331,25 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(
     // 同一所有人下仍有多个：只保留这些候选，提示里不再混入别人的账户。
     return { ...matched, ambiguousAccounts: sameOwner };
   };
+}
+
+export function createImportAccountMatcher<T extends ImportAccountMatchSource>(
+  accounts: T[],
+  context: ImportAccountMatchContext = {},
+): (accountName: string | undefined) => ImportAccountMatchResult<T> {
+  const cacheable = Array.isArray(accounts) && !String(context.ownerName ?? "").trim();
+  if (cacheable) {
+    const cached = importAccountMatcherCache.get(accounts);
+    if (cached) return cached as (accountName: string | undefined) => ImportAccountMatchResult<T>;
+  }
+  const matcher = buildImportAccountMatcher(accounts, context);
+  if (cacheable) {
+    importAccountMatcherCache.set(
+      accounts,
+      matcher as (accountName: string | undefined) => ImportAccountMatchResult<ImportAccountMatchSource>,
+    );
+  }
+  return matcher;
 }
 
 export function createImportAccountResolver<T extends ImportAccountMatchSource>(accounts: T[]) {

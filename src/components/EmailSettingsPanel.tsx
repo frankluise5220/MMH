@@ -183,7 +183,18 @@ function mailSenderAddress(raw?: string | null): string | null {
 }
 
 type MailItem = { uid: number; subject: string; from: string; date: string; hash?: string; /** 来自哪个文件夹（跨文件夹搜索时才有值）。 */ mailbox?: string };
-type MailAttachment = { id: string; filename: string; contentType: string; size: number; text?: string; parseError?: string };
+type MailAttachment = {
+  id: string;
+  filename: string;
+  contentType: string;
+  size: number;
+  text?: string;
+  parseError?: string;
+  /** 服务端给出的失败原因码，界面按码走三语文案，不直出英文原文。 */
+  parseErrorCode?: "pdf_password_required" | "pdf_parse_failed" | "pdf_no_text_layer" | "spreadsheet_parse_failed";
+  /** PDF 设了打开密码：展示密码输入框，补密码后重新抓取该封邮件解密。 */
+  passwordRequired?: boolean;
+};
 type MailDetail = { uid: number; subject: string; from: string; date: string; text: string; html: string; attachments?: MailAttachment[]; hash?: string; mailbox?: string };
 type MailListMeta = {
   total: number;
@@ -412,6 +423,10 @@ export function EmailSettingsPanel({
   const [mailContent, setMailContent] = useState("");
   const [parsing, setParsing] = useState(false);
   const [parsedItems, setParsedItems] = useState<ParsedItem[]>([]);
+  // 加密 PDF 附件（农商行等电子流水默认加密）：密码按附件 id 暂存，只用于这次解密重试。
+  const [attachmentPasswords, setAttachmentPasswords] = useState<Record<string, string>>({});
+  const [attachmentErrors, setAttachmentErrors] = useState<Record<string, string>>({});
+  const [unlockingAttachmentId, setUnlockingAttachmentId] = useState("");
   const [importPreview, setImportPreview] = useState<ImportPreviewState | null>(null);
   const [bookAccounts, setBookAccounts] = useState<BookAccount[]>([]);
   const [bookInstitutions, setBookInstitutions] = useState<BookInstitution[]>([]);
@@ -860,6 +875,16 @@ export function EmailSettingsPanel({
     }
   }
 
+  function attachmentErrorText(attachment: MailAttachment) {
+    switch (attachment.parseErrorCode) {
+      case "pdf_password_required": return t("settings.email.pdfPasswordRequired");
+      case "pdf_parse_failed": return t("settings.email.pdfParseFailed");
+      case "pdf_no_text_layer": return t("settings.email.pdfNoTextLayer");
+      case "spreadsheet_parse_failed": return t("settings.email.attachmentSpreadsheetFailed");
+      default: return attachment.parseError ?? t("settings.email.pdfParseFailed");
+    }
+  }
+
   function buildStatementParseContent(mail: MailDetail | null, fallbackContent = "") {
     // 附件文字优先且独占：把邮件 HTML 一起塞进去会让识别器改走 HTML 分支，
     // 认不出表头就整段放弃，最后只剩一条 amount=0 的兜底记录。
@@ -921,7 +946,106 @@ export function EmailSettingsPanel({
     }
   }
 
+  /**
+   * 加密 PDF 附件补密码后重试。
+   *
+   * 附件字节只在服务端（IMAP 下载时）存在，所以这里重新拉一次这封邮件并带上密码解密，
+   * 拿到附件文字后再走一次正常解析。密码只留在本次请求里，不落库。
+   */
+  async function unlockAttachment(attachment: MailAttachment) {
+    if (!selectedId || !selectedMail) return;
+    const password = (attachmentPasswords[attachment.id] ?? "").trim();
+    if (!password) {
+      setAttachmentErrors((prev) => ({ ...prev, [attachment.id]: t("settings.email.pdfPasswordEmpty") }));
+      return;
+    }
+    setUnlockingAttachmentId(attachment.id);
+    setAttachmentErrors((prev) => ({ ...prev, [attachment.id]: "" }));
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 130000);
+    const traceId = createImportTraceId("settings-email-mail");
+    mailImportTraceIdRef.current = traceId;
+    postImportDebugLog(traceId, "email_attachment_unlock_started", {
+      ...mailDebugDetails(selectedMail, selectedId),
+      attachmentName: attachment.filename,
+    });
+    const startedAt = performance.now();
+    try {
+      const res = await fetch("/api/v1/email/imap/fetch", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          accountId: selectedId,
+          uid: selectedMail.uid,
+          mailbox: selectedMail.mailbox,
+          pdfPassword: password,
+        }),
+        signal: controller.signal,
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setAttachmentErrors((prev) => ({ ...prev, [attachment.id]: data.error ?? t("settings.email.fetchFailed") }));
+        return;
+      }
+      const nextMail = { ...data.item, hash: selectedMail.hash, mailbox: data.mailbox ?? selectedMail.mailbox } as MailDetail;
+      setSelectedMail(nextMail);
+      setMailContent(nextMail.text || nextMail.html || "");
+      const unlocked = (nextMail.attachments ?? []).find((item) => item.id === attachment.id);
+      postImportDebugLog(traceId, "email_attachment_unlock_finished", {
+        ...mailDebugDetails(nextMail, selectedId),
+        attachmentName: attachment.filename,
+        textLength: unlocked?.text?.length ?? 0,
+        durationMs: Math.round(performance.now() - startedAt),
+      });
+      if (!unlocked?.text) {
+        setAttachmentErrors((prev) => ({
+          ...prev,
+          [attachment.id]: unlocked?.passwordRequired
+            ? t("settings.email.pdfPasswordIncorrect")
+            : t("settings.email.pdfUnlockFailed"),
+        }));
+        return;
+      }
+      setAttachmentPasswords((prev) => {
+        const next = { ...prev };
+        delete next[attachment.id];
+        return next;
+      });
+      setAttachmentErrors((prev) => {
+        const next = { ...prev };
+        delete next[attachment.id];
+        return next;
+      });
+      // 解密完成，接下来是识别：把按钮从「解密中…」交给「识别中…」（parsing 状态）。
+      setUnlockingAttachmentId("");
+      await parseMail(nextMail, true);
+    } catch (e) {
+      postImportDebugLog(traceId, "email_attachment_unlock_failed", {
+        errorType: e instanceof Error ? e.name : "unknown",
+        errorMessage: e instanceof Error ? e.message : String(e),
+        durationMs: Math.round(performance.now() - startedAt),
+      });
+      setAttachmentErrors((prev) => ({
+        ...prev,
+        [attachment.id]: e instanceof DOMException && e.name === "AbortError"
+          ? t("settings.email.fetchTimeoutHint")
+          : t("settings.passwordRecovery.networkError"),
+      }));
+    } finally {
+      clearTimeout(timer);
+      setUnlockingAttachmentId("");
+    }
+  }
+
   async function parseMail(mail = selectedMail, autoOpenPreview = false) {
+    // 加密附件还没解密时不要拿邮件正文硬解析：正文里只有「附件已加密」的说明，
+    // 解析出来只会是一条 amount=0 的垃圾记录，用户看不出真正原因。
+    const lockedAttachment = (mail?.attachments ?? []).find((item) => item.passwordRequired && !item.text);
+    const hasAttachmentText = (mail?.attachments ?? []).some((item) => item.text?.trim());
+    const hasHtmlTable = /<table[\s>]/i.test(mail?.html ?? "");
+    if (lockedAttachment && !hasAttachmentText && !hasHtmlTable) {
+      setError(t("settings.email.pdfPasswordRequired"));
+      return;
+    }
     const sourceContent = buildStatementParseContent(mail, mail === selectedMail ? mailContent : (mail?.text || mail?.html || ""));
     const traceId = mailImportTraceIdRef.current || createImportTraceId("settings-email-mail");
     const startedAt = performance.now();
@@ -962,7 +1086,18 @@ export function EmailSettingsPanel({
         if (autoOpenPreview) {
           if (items.length > 0) {
             await bookLookupsPromise;
+            // 先让浏览器把「识别中…」画出来：构建预览要对每行做账户匹配（140 行约 0.5~1s 同步计算）。
+            await new Promise<void>((resolve) => {
+              if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => resolve());
+              else setTimeout(resolve, 0);
+            });
+            const previewStartedAt = performance.now();
             openImportPreview(items);
+            postImportDebugLog(traceId, "email_preview_opened", {
+              ...mailDebugDetails(mail, selectedId),
+              rowCount: items.length,
+              durationMs: Math.round(performance.now() - previewStartedAt),
+            });
             // The outer credit-card mail dialog can now close; the statement
             // preview dialog lives at a higher z-index and stays visible.
             onStatementPreviewOpened?.();
@@ -1185,6 +1320,9 @@ export function EmailSettingsPanel({
   function accountIdFromName(accountName: string) {
     const name = cleanOptionalText(accountName);
     if (!name) return undefined;
+    // 预览是按行调用的：先用账户全名精确命中，避免每行都跑一次模糊匹配（约 2ms/行）。
+    const exact = bookAccounts.find((account) => account.name === name);
+    if (exact?.id) return exact.id;
     const nameKey = normalizedKey(name);
     const resolver = createImportAccountResolver(bookAccounts);
     const found = resolver(name);
@@ -1387,13 +1525,18 @@ export function EmailSettingsPanel({
     }));
     const accountIds = Array.from(new Set(baseRows.map((row) => row.selectedAccountId ?? row.matchedAccountId).filter(Boolean)));
     const statementAccountId = accountIds.length === 1 ? accountIds[0] : undefined;
-    const rows = baseRows.map((row) => ({
-      ...row,
-      selectedAccountId: row.selectedAccountId ?? statementAccountId,
-      matchedAccountId: row.matchedAccountId ?? statementAccountId,
-      ready: isPreviewRowReady(row.item, Boolean(row.selectedAccountId || row.matchedAccountId || statementAccountId)),
-      missingFields: getPreviewMissingFields(row.item, Boolean(row.selectedAccountId || row.matchedAccountId || statementAccountId)),
-    }));
+    const rows = baseRows.map((row) => {
+      const hasAccount = Boolean(row.selectedAccountId || row.matchedAccountId || statementAccountId);
+      // 只算一次缺失字段：它内部会对对向账户再跑一次匹配，140 行重复两遍纯属浪费。
+      const missingFields = getPreviewMissingFields(row.item, hasAccount);
+      return {
+        ...row,
+        selectedAccountId: row.selectedAccountId ?? statementAccountId,
+        matchedAccountId: row.matchedAccountId ?? statementAccountId,
+        missingFields,
+        ready: isRowReadyForImport(row.item) && missingFields.length === 0,
+      };
+    });
     setImportPreview({
       items: rows,
       selectedKeys: new Set(rows.filter((row) => row.ready).map((row) => row.key)),
@@ -2476,8 +2619,43 @@ export function EmailSettingsPanel({
                             </div>
                             {attachment.text ? (
                               <div className="mt-0.5 text-emerald-700">{t("settings.email.pdfTextExtracted")}</div>
+                            ) : attachment.passwordRequired ? (
+                              <div className="mt-1 space-y-1">
+                                <div className="text-amber-700">{t("settings.email.pdfPasswordRequired")}</div>
+                                <div className="flex items-center gap-1.5">
+                                  <input
+                                    type="password"
+                                    autoComplete="off"
+                                    className="form-input min-w-0 flex-1 text-xs"
+                                    value={attachmentPasswords[attachment.id] ?? ""}
+                                    placeholder={t("settings.email.pdfPasswordPlaceholder")}
+                                    onChange={(event) => setAttachmentPasswords((prev) => ({ ...prev, [attachment.id]: event.target.value }))}
+                                    onKeyDown={(event) => {
+                                      if (event.key !== "Enter") return;
+                                      event.preventDefault();
+                                      void unlockAttachment(attachment);
+                                    }}
+                                  />
+                                  <button
+                                    type="button"
+                                    className="shrink-0 rounded border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                                    disabled={unlockingAttachmentId === attachment.id || parsing}
+                                    onClick={() => void unlockAttachment(attachment)}
+                                  >
+                                    {unlockingAttachmentId === attachment.id
+                                      ? t("settings.email.pdfUnlocking")
+                                      : parsing
+                                        ? t("settings.email.recognizing")
+                                        : t("settings.email.pdfUnlock")}
+                                  </button>
+                                </div>
+                                {attachmentErrors[attachment.id] ? (
+                                  <div className="text-red-600">{attachmentErrors[attachment.id]}</div>
+                                ) : null}
+                                <div className="text-[11px] text-slate-500">{t("settings.email.pdfPasswordHint")}</div>
+                              </div>
                             ) : attachment.parseError ? (
-                              <div className="mt-0.5 text-amber-700">{attachment.parseError}</div>
+                              <div className="mt-0.5 text-amber-700">{attachmentErrorText(attachment)}</div>
                             ) : (
                               <div className="mt-0.5 text-slate-400">{attachment.contentType || t("settings.email.attachments")}</div>
                             )}

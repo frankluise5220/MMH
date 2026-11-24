@@ -16,6 +16,8 @@ const BodySchema = z.object({
   /** 跨文件夹搜索时由列表项带回来；不传则用账户里保存的文件夹。 */
   mailbox: z.string().min(1).optional(),
   uid: z.number().int().min(1),
+  /** 加密 PDF 附件的打开密码（农商行等电子流水默认加密，密码在手机 App 里查）。 */
+  pdfPassword: z.string().max(200).optional(),
   debug: z.boolean().optional(),
 });
 
@@ -49,7 +51,7 @@ export async function POST(req: NextRequest) {
   try {
     const opened = await connectAndOpenBox({ host, port, secure, user, password, mailbox }, trace);
     client = opened.client;
-    const item = await fetchMailDetail(client, uid);
+    const item = await fetchMailDetail(client, uid, { pdfPassword: parsed.data.pdfPassword });
     return NextResponse.json({ ok: true, item, mailbox: opened.mailbox, ...(debug ? { trace: [...trace, "fetch ok"] } : {}) });
   } catch (e) {
     const rawMsg = e instanceof Error ? e.message : "邮箱连接失败";

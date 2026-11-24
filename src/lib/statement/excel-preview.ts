@@ -459,7 +459,10 @@ export function parseStatementTemplateRows(
         amount,
         inflow: transferIsInflow ? amount : undefined,
         outflow: transferIsInflow ? undefined : amount,
-        account: transferIsInflow ? toAccount : fromAccount,
+        // 没有对向账户信息时（PDF 流水只有一列账户、无「对方账户」列）不能把账户丢空：
+        // 整张表都属于账户列这张卡（页眉 6228 **** 2058），另一侧未知交给用户在预览里补。
+        // 空账户会让预览里每一条转账都要手选账户，还会丢掉尾号匹配。
+        account: (transferIsInflow ? toAccount : fromAccount) || accountValue || contextAccount,
         fromAccount,
         toAccount,
         transferDirection: transferIsInflow ? "in" as const : "out" as const,
