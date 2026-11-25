@@ -1,6 +1,6 @@
 import { AccountKind, FundProductType, Prisma, TransactionType } from "@prisma/client";
 
-import { addDaysUtc } from "@/lib/date-utils";
+import { addDaysUtc, formatDateInTimeZone } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
 import { resolveFundName } from "@/lib/fund/fundProfile";
 import { ensureMoneyFundYieldRange, shiftYmd } from "@/lib/fund/moneyFundYield";
@@ -8,6 +8,7 @@ import { queryDailyEndBalances } from "@/lib/server/detail-page-query";
 import { moneyFundDailyIncome } from "@/lib/server/money-fund-income-accrual";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { createManySkipDuplicatesCompat } from "@/lib/server/prisma-create-many";
+import { getHouseholdTimeZone } from "@/lib/server/household-preferences";
 import { runExclusive, utcDayKey } from "@/lib/server/interest-accrual";
 import { logger } from "@/lib/logger";
 import { ENTRY_ORIGIN_SCHEDULED_TASK, TRANSACTION_SOURCE_MONEY_INCOME } from "@/lib/transaction-semantics";
@@ -91,6 +92,14 @@ type LinkedFundSegment = {
   fundName: string | null;
   startKey: string;
   endKey: string | null;
+  /**
+   * 自动结转的水位（YYYY-MM-DD）= 这段建立/最后编辑那天的业务日。
+   *
+   * 自动结转（后台任务、开机自检）只从这天开始逐日往下结，不回补更早的历史：
+   * 绑货基、改段都不等于「要一份历史收益」（2026-11-24 用户裁定）。历史由用户在
+   * 弹窗里点「重算」显式生成，那条路径带 `rebuildFrom`，不受水位限制。
+   */
+  autoFloorKey: string | null;
 };
 
 type SegmentPlan = LinkedFundSegment & {
@@ -128,11 +137,11 @@ async function resolveMoneyIncomeCategoryId(householdId: string): Promise<string
  * 表里还没有记录时（迁移刚上、或老库只有 Account 上的单段），退回用 Account 快照
  * 拼一段，保证计息不中断；迁移会把这些快照回填成正式记录。
  */
-async function loadWalletSegments(wallet: WalletTarget): Promise<LinkedFundSegment[]> {
+async function loadWalletSegments(wallet: WalletTarget, timeZone: string): Promise<LinkedFundSegment[]> {
   const rows = await prisma.walletLinkedFund.findMany({
     where: { accountId: wallet.id },
     orderBy: [{ startDate: "asc" }, { createdAt: "asc" }],
-    select: { fundCode: true, fundName: true, startDate: true, endDate: true },
+    select: { fundCode: true, fundName: true, startDate: true, endDate: true, createdAt: true, updatedAt: true },
   });
   if (rows.length > 0) {
     return rows
@@ -141,14 +150,23 @@ async function loadWalletSegments(wallet: WalletTarget): Promise<LinkedFundSegme
         fundName: row.fundName,
         startKey: utcDayKey(row.startDate),
         endKey: row.endDate ? utcDayKey(row.endDate) : null,
+        // createdAt 是真实时刻，按业务时区折成日历日；改段会推高 updatedAt，于是
+        // 「改过的段」同样从改的那天起算，不会顺手把改之前的日子重新结一遍。
+        autoFloorKey: formatDateInTimeZone(
+          new Date(Math.max(row.createdAt.getTime(), row.updatedAt.getTime())),
+          timeZone,
+        ),
       }))
       .filter((row) => /^\d{6}$/.test(row.fundCode));
   }
+  // 表里还没有记录（迁移前的老库只有 Account 快照）：不知道这段是什么时候建的，
+  // 水位留空即保持旧行为（从段起始日补结），不让升级本身改变已存在的计息结果。
   return [{
     fundCode: wallet.linkedFundCode,
     fundName: null,
     startKey: utcDayKey(wallet.linkedFundStartDate),
     endKey: null,
+    autoFloorKey: null,
   }];
 }
 
@@ -194,16 +212,18 @@ async function accrueOneWallet(params: {
   wallet: WalletTarget;
   today: Date;
   rebuild: boolean;
+  /** 账簿业务时区：把段的建立/编辑时刻折成日历日，算自动结转水位。 */
+  timeZone: string;
   /** 从这一天（含）起重算：删掉该日及以后的收益行，再从这天补到终点（默认昨天）。 */
   rebuildFrom?: string | null;
   /** 重算终点（含）；默认补到昨天，因为当天的万份收益还没公布。 */
   rebuildTo?: string | null;
 }): Promise<WalletMoneyFundAccrualResult> {
-  const { householdId, wallet, today, rebuild } = params;
+  const { householdId, wallet, today, rebuild, timeZone } = params;
   const yesterday = addDaysUtc(utcMidnight(today), -1);
   const yesterdayKey = utcDayKey(yesterday);
 
-  const segments = await loadWalletSegments(wallet);
+  const segments = await loadWalletSegments(wallet, timeZone);
   if (segments.length === 0) {
     return { ...EMPTY, wallets: 1, reason: "no linked fund segment" };
   }
@@ -287,6 +307,12 @@ async function accrueOneWallet(params: {
     const segmentEndKey = segment.endKey && segment.endKey < accrualEndKey ? segment.endKey : accrualEndKey;
     let fromKey = segment.startKey;
     if (cursorKey && cursorKey > fromKey) fromKey = cursorKey;
+    // 自动结转（后台任务 / 开机自检，既没带 fromDate 也没要求整段重来）只结「这段建立或
+    // 最后编辑那天」起的收益：绑定/改段不再顺手把绑定日到昨天的历史一次补齐，那部分由
+    // 用户点「重算」显式生成（重算走 rebuild / rebuildFrom，不受水位限制）。
+    if (!rebuild && !rebuildFromKey && segment.autoFloorKey && segment.autoFloorKey > fromKey) {
+      fromKey = segment.autoFloorKey;
+    }
     if (fromKey > segmentEndKey) continue;
 
     let toKey = segmentEndKey;
@@ -445,8 +471,12 @@ async function accrueOneWallet(params: {
 /**
  * 给「直接挂货基代码」的电子钱包补结每日收益（当前账本，或只结某一只钱包）。
  *
- * 触发时机与旧货基结转一致：开机自检 + 手工接口。漏跑几天不会丢——从上次结转日的
- * 次日继续，单次最多补 366 天，剩下的下次接着补。
+ * 触发时机与旧货基结转一致：开机自检 + 后台任务 + 手工接口。漏跑几天不会丢——从上次
+ * 结转日的次日继续，单次最多补 366 天，剩下的下次接着补。
+ *
+ * **历史不自动补**（2026-11-24 用户裁定）：自动结转（没有 `rebuildFrom`）只从「这段
+ * 建立或最后编辑那天」开始逐日往下结。绑货基、改计息日/退出日/代码都不会顺手把绑定日
+ * 到昨天的收益一次补齐——那等于用户没要求的重算。历史收益只在用户点弹窗「重算」时生成。
  *
  * `rebuildFrom` / `rebuildTo`：重算区间 `[from, to]`（含两端）——先删掉这段收益行，
  * 再按当前余额与万份收益重放。`to` 默认昨天（当天收益还没公布），晚于昨天会被夹回昨天。
@@ -467,6 +497,7 @@ export async function accrueWalletMoneyFundIncome(params: {
   const rebuildTo = normalizeDayKey(params.rebuildTo);
 
   return runExclusive(`wallet-money-fund-income:${householdId}`, async () => {
+    const timeZone = await getHouseholdTimeZone(householdId);
     const rows = await prisma.account.findMany({
       where: {
         householdId,
@@ -517,7 +548,15 @@ export async function accrueWalletMoneyFundIncome(params: {
 
     for (const wallet of wallets) {
       try {
-        const outcome = await accrueOneWallet({ householdId, wallet, today, rebuild, rebuildFrom, rebuildTo });
+        const outcome = await accrueOneWallet({
+          householdId,
+          wallet,
+          today,
+          rebuild,
+          timeZone,
+          rebuildFrom,
+          rebuildTo,
+        });
         removed += outcome.removed ?? 0;
         days += outcome.days ?? 0;
         totalIncome = round2(totalIncome + (outcome.totalIncome ?? 0));

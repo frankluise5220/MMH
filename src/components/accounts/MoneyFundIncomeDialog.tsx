@@ -9,7 +9,10 @@
  *
  * 弹窗里就一张表：每行是一段绑定，计息日期、退出日期、货基代码都能直接改，改完点行尾
  * 「确定」提交（2026-11-19 用户要求）；表格最下面留一个空行用来新增一段。改段会连带清掉
- * 该段旧区间的收益行，保存后立刻重新结一次，明细里不会同时出现两只基金的收益。
+ * 该段旧区间的收益行，明细里不会同时出现两只基金的收益。
+ *
+ * 保存绑定/改段**不自动重算历史**（2026-11-24 用户裁定）：历史收益只在用户点下面的
+ * 「重算」按钮时生成；当天的自动结转与开机自检照常按天继续结，不受影响。
  * 收益本身由 src/lib/server/wallet-money-fund-income.ts 计算，这里只发请求。
  */
 
@@ -360,15 +363,6 @@ export function MoneyFundIncomeDialog({ open, account, onClose, onChanged }: Pro
     }
   }, [open, resolveFundName, segments]);
 
-  async function accrueNow(accountId: string, fromDate?: string) {
-    await fetch("/api/v1/fund/money-income/accrue", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(fromDate ? { accountId, fromDate } : { accountId }),
-    }).catch(() => null);
-    onChanged("account:linked-fund-accrue");
-  }
-
   function draftOf(segment: LinkedFundSegment): SegmentDraft {
     return drafts[segment.id] ?? draftFromSegment(segment);
   }
@@ -449,15 +443,9 @@ export function MoneyFundIncomeDialog({ open, account, onClose, onChanged }: Pro
       }
       onChanged("account:linked-fund-segment-save");
       await loadSegments(account.id, { silent: true });
-      // 段变了：服务端已把新旧区间里的收益行删掉，这里必须**按区间起点重结**。
-      // 不带 fromDate 走的是增量结转（游标 = 最后一条收益日 + 1），删出来的空档
-      // 永远不会被回补，那几天就白丢了。
-      const previous = segmentId ? segments.find((item) => item.id === segmentId) : null;
-      const fromDate = previous && previous.startDate < draft.startDate
-        ? previous.startDate
-        : draft.startDate;
-      await accrueNow(account.id, fromDate);
-      await loadSegments(account.id, { silent: true });
+      // 保存段之后**不自动重算**（2026-11-24 用户裁定）：绑定/改段只是建立或修正区间，
+      // 历史收益要不要生成、生成到哪一天，由用户点下面的「重算」决定。服务端已经把新旧
+      // 区间里的旧收益行删掉并重算了余额，自动结转会从今天起按天继续结，不回补历史。
     } catch {
       setError(t("settings.accounts.linkedFund.bindFailed"));
     } finally {
@@ -841,6 +829,9 @@ export function MoneyFundIncomeDialog({ open, account, onClose, onChanged }: Pro
             </div>
             <div className="text-[11px] leading-snug text-slate-500">
               {t("settings.accounts.linkedFund.fundCodeHint")}
+            </div>
+            <div className="text-[11px] leading-snug text-slate-500">
+              {t("settings.accounts.linkedFund.noAutoAccrualHint")}
             </div>
           </div>
 
