@@ -147,6 +147,7 @@ export function FundProfileSettingsClient({ account, profile, backHref, onClose,
   const [saveMessage, setSaveMessage] = useState("");
   const [saveError, setSaveError] = useState("");
   const [editPlan, setEditPlan] = useState<RelatedScheduledTask | null>(null);
+  const [createPlanOpen, setCreatePlanOpen] = useState(false);
   const [scheduledReloadToken, setScheduledReloadToken] = useState(0);
 
   useEffect(() => {
@@ -161,8 +162,9 @@ export function FundProfileSettingsClient({ account, profile, backHref, onClose,
   }, [dirtyFields, onDirtyChange]);
 
   useEffect(() => {
-    onEditPlanOpenChange?.(editPlan !== null);
-  }, [editPlan, onEditPlanOpenChange]);
+    // 编辑 / 新增计划都是本页之上的二级弹窗：开着的时候父级（资料页弹窗）不能跟着 Esc 关掉。
+    onEditPlanOpenChange?.(editPlan !== null || createPlanOpen);
+  }, [editPlan, createPlanOpen, onEditPlanOpenChange]);
 
   const pendingFundCompanyOption = useMemo<SmartSelectOption | null>(() => {
     const value = form.fundCompany?.trim();
@@ -403,6 +405,7 @@ export function FundProfileSettingsClient({ account, profile, backHref, onClose,
               preloadedPlans={preloadedPlans}
               reloadToken={scheduledReloadToken}
               onEdit={setEditPlan}
+              onCreate={() => setCreatePlanOpen(true)}
             />
           </div>
         </section>
@@ -427,6 +430,31 @@ export function FundProfileSettingsClient({ account, profile, backHref, onClose,
             setEditPlan(null);
             setScheduledReloadToken((n) => n + 1);
             dispatchFinanceDataChanged({ reason: "fund-profile-scheduled-task-edit", accountIds: [account.id] });
+          }}
+        />
+      ) : null}
+      {/* 资料页就地新增本基金的计划任务：账户与基金代码已确定，直接打开基金类计划弹窗，
+          不再跳去计划任务视图让人重新选一遍基金。 */}
+      {createPlanOpen ? (
+        <RegularInvestForm
+          mode="create"
+          accountId={account.id}
+          prefilledAccountId={account.id}
+          prefilledFundCode={profile.fundCode}
+          prefilledFundName={profile.fundName}
+          defaultInvestProductType={account.investProductType ?? null}
+          investmentAccounts={investmentAccounts}
+          cashAccounts={cashAccounts}
+          investmentAccountSSOptions={investmentAccountSSOptions}
+          cashAccountSSOptions={cashAccountSSOptions}
+          showTriggerButton={false}
+          open={createPlanOpen}
+          onOpenChange={(open) => { if (!open) setCreatePlanOpen(false); }}
+          submitMethod="api"
+          onSuccess={() => {
+            setCreatePlanOpen(false);
+            setScheduledReloadToken((n) => n + 1);
+            dispatchFinanceDataChanged({ reason: "fund-profile-scheduled-task-create", accountIds: [account.id] });
           }}
         />
       ) : null}

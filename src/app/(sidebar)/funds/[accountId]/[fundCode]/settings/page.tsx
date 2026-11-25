@@ -3,11 +3,15 @@ import { notFound } from "next/navigation";
 
 import { FundProfileSettingsClient, type FundProfileSettingsData } from "@/components/FundProfileSettingsClient";
 import type { SmartSelectOption } from "@/components/SmartSelect";
-import { getInvestmentAccountView } from "@/lib/account-kind-utils";
+import { accountRenderSettings, buildAccountDisplayOption, buildFlatAccountOptions, buildGroupedAccountOptions } from "@/lib/account-display";
+import { getInvestmentAccountView, isFundLikeInvestmentAccount } from "@/lib/account-kind-utils";
 import { institutionFullName } from "@/lib/institution-display";
 import { prisma } from "@/lib/db/prisma";
 import { fundTradingCalendarForProfile, getFundProfile } from "@/lib/fund/fundProfile";
+import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { getServerAccountDropdownGroupBy } from "@/lib/server/account-dropdown-group-by";
+import { getServerAccountLabelFields } from "@/lib/server/account-label-fields";
 
 export const dynamic = "force-dynamic";
 
@@ -37,7 +41,17 @@ export default async function FundProfileSettingsPage({
   });
   if (!account) notFound();
 
-  const [profile, holding, latestFundTransaction, latestLegacyTransaction, fundCompanyInstitutions] = await Promise.all([
+  const [
+    profile,
+    holding,
+    latestFundTransaction,
+    latestLegacyTransaction,
+    fundCompanyInstitutions,
+    accountRows,
+    accountLabelFields,
+    accountDropdownGroupBy,
+    baseCurrency,
+  ] = await Promise.all([
     getFundProfile(fundCode),
     prisma.fundHolding.findFirst({
       where: { accountId: account.id, fundCode },
@@ -58,6 +72,15 @@ export default async function FundProfileSettingsPage({
       select: { id: true, name: true, shortName: true, type: true },
       orderBy: { name: "asc" },
     }),
+    // 资料页底部可以直接新增计划任务，弹窗里的「基金账户 / 扣款账户」下拉需要同款候选。
+    prisma.account.findMany({
+      where: { isPlaceholder: { not: true }, ...ctx.hidFilter },
+      include: { Institution: true, AccountGroup: true },
+      orderBy: [{ isActive: "desc" }, { name: "asc" }],
+    }),
+    getServerAccountLabelFields(),
+    getServerAccountDropdownGroupBy(),
+    getHouseholdBaseCurrency(ctx.householdId),
   ]);
 
   if (!holding && !latestFundTransaction && !latestLegacyTransaction) notFound();
@@ -73,6 +96,17 @@ export default async function FundProfileSettingsPage({
   };
   const institutionName = institutionFullName(account.Institution) || null;
   const backQuery = new URLSearchParams({ accountId: account.id, view: getInvestmentAccountView(account), fundCode });
+  // 账户下拉候选：标签统一走 account-display 入口（含本位币），不要在这里手拼机构·名称。
+  const accountOptions = accountRows
+    .filter((row) => row.isAggregate !== true)
+    .map((row) => buildAccountDisplayOption(row, undefined, accountRenderSettings(accountLabelFields, baseCurrency)));
+  const wantedFundType = account.investProductType === "money" ? "money" : null;
+  const planInvestmentAccounts = accountOptions.filter(
+    (item) =>
+      isFundLikeInvestmentAccount(item) &&
+      (!wantedFundType || !item.investProductType || item.investProductType === wantedFundType),
+  );
+  const planCashAccounts = accountOptions.filter((item) => ["bank_debit", "ewallet", "cash"].includes(item.kind));
 
   return (
     <FundProfileSettingsClient
@@ -85,6 +119,10 @@ export default async function FundProfileSettingsPage({
         kind: institution.type,
       }))}
       backHref={`/?${backQuery.toString()}`}
+      investmentAccounts={planInvestmentAccounts.map((item) => ({ id: item.id, name: item.name, label: item.label }))}
+      cashAccounts={planCashAccounts}
+      investmentAccountSSOptions={buildFlatAccountOptions(planInvestmentAccounts)}
+      cashAccountSSOptions={buildGroupedAccountOptions(planCashAccounts, accountDropdownGroupBy)}
     />
   );
 }

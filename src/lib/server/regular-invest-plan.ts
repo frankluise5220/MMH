@@ -8,7 +8,6 @@ type TxRecordReader = {
     findFirst: (args: {
       where: {
         regularInvestPlanId: string;
-        deletedAt: null;
         householdId?: string;
         source: { in: string[] };
       };
@@ -83,10 +82,11 @@ export async function deriveRegularInvestNextRunDate(
   plan: RegularInvestPlanSchedule,
 ): Promise<Date> {
   const normalizedTaskType = normalizeScheduledTaskType(plan.taskType);
+  // 不看 deletedAt：用户删掉的那一期是「墓碑」，仍然算该计划已经走到过的日期。
+  // 否则删掉最新一期再改计划设置，游标会退回被删的期次，下一轮执行又把它造回来。
   const latestRecord = await db.txRecord.findFirst({
     where: {
       regularInvestPlanId: plan.id,
-      deletedAt: null,
       ...(plan.householdId ? { householdId: plan.householdId } : {}),
       source: { in: getRegularInvestPlanRecordSources(normalizedTaskType) },
     },

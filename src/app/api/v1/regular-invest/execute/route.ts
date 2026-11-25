@@ -153,12 +153,13 @@ export async function POST(req: NextRequest) {
       const today = businessDayStartUtc(now, await getHouseholdTimeZone(householdId));
       const effectiveEndDate = plan.endDate && startOfDayUtc(plan.endDate) < today ? startOfDayUtc(plan.endDate) : today;
       const sourceFilter = getScheduledTaskSourceFilter(task.type as NonFundTaskType);
+      // 不看 deletedAt：被删掉的那一期是「墓碑」，仍是「该日期已生成过」的凭据。
+      // 否则计划游标落后（暂停后重启、补记历史）时，用户删掉的期次会被重新造出来。
       const existingTxRecords = await prisma.txRecord.findMany({
         where: {
           householdId,
           regularInvestPlanId: planId,
           source: { in: sourceFilter },
-          deletedAt: null,
         },
         select: { date: true },
       });
@@ -363,17 +364,23 @@ export async function POST(req: NextRequest) {
     const result = await prisma.$transaction(async (tx) => {
       await acquireScheduledTaskPlanLock(tx, planId);
 
+      // 含墓碑：同一天那一期若被用户删掉，不能再被「立即执行」重新造出来。
       const existingForRunDate = await tx.fundTransaction.findFirst({
         where: {
           householdId,
           regularInvestPlanId: planId,
           source: "regular_invest",
-          deletedAt: null,
           applyDate: runDate,
         },
-        select: { id: true },
+        select: { id: true, deletedAt: true },
       });
-      if (existingForRunDate) return { skippedDuplicate: true, buyFailed: false };
+      if (existingForRunDate) {
+        return {
+          skippedDuplicate: true,
+          skippedBecauseDeleted: existingForRunDate.deletedAt != null,
+          buyFailed: false,
+        };
+      }
 
       // Suspended purchase: create two offsetting records that sum to 0
       // Record 1: regular invest (suspended) - from cash account to fund account, amount -100
@@ -497,7 +504,9 @@ export async function POST(req: NextRequest) {
     if (result.skippedDuplicate) {
       return NextResponse.json({
         ok: true,
-        message: "该执行日期的交易明细已存在，无需重复生成",
+        message: result.skippedBecauseDeleted
+          ? `该日期（${formatDateUtc(runDate)}）的定投记录已被删除，为避免把删掉的期次又造回来，本次未生成`
+          : "该执行日期的交易明细已存在，无需重复生成",
         date: formatDateUtc(runDate),
         executedRuns: plan.executedRuns,
         completed: false,

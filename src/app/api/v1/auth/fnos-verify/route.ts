@@ -7,8 +7,6 @@ import { getUserSessionDays, issueSessionCookies } from "@/lib/server/session-is
 
 export const runtime = "nodejs";
 
-const MAX_EMAIL = 255;
-
 function cors() {
   return {
     "Access-Control-Allow-Origin": "*",
@@ -26,7 +24,6 @@ interface FnosLoginUser {
   name: string;
   householdId: string | null;
   authVersion: number;
-  email: string | null;
   Household: { id: string; name: string } | null;
 }
 
@@ -46,7 +43,7 @@ function householdChoicesForUsers(users: FnosLoginUser[]) {
 
 /**
  * POST /api/v1/auth/fnos-verify
- * Body: { householdId?: string, email?: string }
+ * Body: { householdId?: string }
  *
  * fnOS-unified-gateway login. Requires the fnOS gateway to have forwarded the
  * user identity (X-Trim-Username / X-Trim-Userid). Resolves the ledger user by
@@ -56,8 +53,12 @@ function householdChoicesForUsers(users: FnosLoginUser[]) {
  * repeatable across ledgers. When householdId is omitted and the identity is
  * bound in several ledgers, returns 409 AMBIGUOUS_USER with a ledger picker.
  *
- * An optional `email` is bound to the resolved user when provided (the fnOS
- * session is already authenticated by the gateway, so no extra code step).
+ * This endpoint signs in and does nothing else. It deliberately accepts no
+ * profile fields: binding a recovery email is an account-data change, so it
+ * belongs inside the ledger (Settings → Users) where the operator's permission
+ * is checked — not on the sign-in card, where whoever holds the gateway session
+ * could rewrite the recovery address of the account being entered.
+ *
  * On success sets the same session cookies as /api/v1/auth/verify.
  */
 export async function POST(request: NextRequest) {
@@ -71,13 +72,12 @@ export async function POST(request: NextRequest) {
 
   const schema = z.object({
     householdId: z.string().min(1).optional(),
-    email: z.string().email().max(MAX_EMAIL).optional(),
   });
   let parsed: z.infer<typeof schema>;
   try {
     parsed = schema.parse(await request.json().catch(() => null));
   } catch {
-    return NextResponse.json({ ok: false, code: "INVALID_REQUEST", error: "householdId and email are optional." }, { status: 400, headers: cors() });
+    return NextResponse.json({ ok: false, code: "INVALID_REQUEST", error: "householdId is optional." }, { status: 400, headers: cors() });
   }
 
   const select = {
@@ -85,7 +85,6 @@ export async function POST(request: NextRequest) {
     name: true,
     householdId: true,
     authVersion: true,
-    email: true,
     Household: { select: { id: true, name: true } },
   } as const;
 
@@ -118,17 +117,6 @@ export async function POST(request: NextRequest) {
   }
 
   const user = matches[0];
-
-  if (parsed.email) {
-    const email = parsed.email.trim().toLowerCase();
-    if (user.email !== email) {
-      const emailTaken = await prisma.user.findFirst({ where: { email, id: { not: user.id } }, select: { id: true } });
-      if (emailTaken) {
-        return NextResponse.json({ ok: false, code: "DUPLICATE_EMAIL", error: "This email is already used by another user." }, { status: 409, headers: cors() });
-      }
-      await prisma.user.update({ where: { id: user.id }, data: { email } });
-    }
-  }
 
   const response = NextResponse.json({ ok: true, username: user.name, householdId: user.householdId });
   issueSessionCookies(

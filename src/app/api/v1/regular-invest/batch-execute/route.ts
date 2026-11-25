@@ -57,7 +57,7 @@ const BATCH_EXECUTE_TRANSACTION_OPTIONS = {
 
 /**
  * Batch-executes a regular investment plan: generates all due transaction
- * records from the start date up to now.
+ * records from the plan cursor (`nextRunDate`) up to now.
  * POST /api/v1/regular-invest/batch-execute
  * Body: { planId: string }
  *
@@ -161,12 +161,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, code: "INVALID_AMOUNT", error: "金额不正确" }, { status: 400 });
     }
 
-    // Duplicate-prevention: query all fund transactions already generated for this plan
+    // Duplicate-prevention: query all fund transactions generated for this plan, INCLUDING soft-deleted ones.
+    // 被删除的期次是一块「墓碑」：用户在明细里删掉一期，就是在说这一期不该有，
+    // 不能再被下一轮批量执行当成「还没执行」重新补出来（此前 deletedAt: null 会让起点回退、
+    // 删除的期次几分钟后又以新 id 冒出来）。
     const existingFundTransactions = await prisma.fundTransaction.findMany({
       where: {
         regularInvestPlanId: planId,
         source: "regular_invest",
-        deletedAt: null,
       },
       select: {
         id: true,
@@ -183,13 +185,30 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Start after the most recently executed date (no historical backfill)
+    // 起点 = 计划的「下个执行日」（游标）。它是用户唯一能手动拨动的旋钮：
+    // 拨到过去某天就是要求「执行」从那天开始补记（确认框承诺"生成所有到期但未执行的明细"），
+    // 拨到未来就是不生成中间期次。此前起点一律取「最近一笔记录 + 一个周期」，
+    // 于是把下个执行日回拨到 10-30 再点执行，只按最近记录补出 11-25 这一期，
+    // 10-30 ~ 11-24 的期次永久缺失；用户改了「下个执行日」却看不到任何效果。
+    // existingDates（含墓碑）仍逐日去重：已生成或被用户删掉的日期不会被重建。
     let currentDate: Date;
-    if (existingFundTransactions.length > 0) {
+    if (plan.nextRunDate) {
+      currentDate = plan.nextRunDate;
+    } else if (existingFundTransactions.length > 0) {
       // Find the latest record date and start from the day after it
       const latestDate = existingFundTransactions.reduce((max, r) => (r.applyDate > max ? r.applyDate : max), new Date(0));
       currentDate = calcNextRunDate(
         latestDate,
+        plan.intervalUnit,
+        plan.intervalValue,
+        plan.executionDay,
+        plan.secondaryExecutionDay,
+      );
+    } else if (plan.lastRunDate) {
+      // 记录被全部删除（连墓碑都没有）：计划游标证明历史期次已经执行过，
+      // 从游标之后继续，绝不允许退回 startDate 把整段历史重新生成一遍。
+      currentDate = calcNextRunDate(
+        plan.lastRunDate,
         plan.intervalUnit,
         plan.intervalValue,
         plan.executionDay,
@@ -233,9 +252,15 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Cap the number of records generated this run (do not exceed the total run limit)
-    const maxToExecute = plan.totalRuns ? plan.totalRuns - plan.executedRuns : datesToExecute.length;
+    // Cap the number of records generated this run (do not exceed the total run limit).
+    // 起点改由「下个执行日」决定后，用户把游标拨到很久以前时到期期次可能上千条，
+    // 单次执行要逐日查净值，会撑爆事务超时 —— 一次最多补 MAX_RUNS_PER_EXECUTE 期，
+    // 余下的留到下一次执行（游标会停在已生成的最末期次之后）。
+    const MAX_RUNS_PER_EXECUTE = 400;
+    let maxToExecute = Math.min(datesToExecute.length, MAX_RUNS_PER_EXECUTE);
+    if (plan.totalRuns) maxToExecute = Math.min(maxToExecute, plan.totalRuns - plan.executedRuns);
     let datesToProcess = datesToExecute.slice(0, maxToExecute);
+    const remainingDueCount = Math.max(0, datesToExecute.length - datesToProcess.length);
     let skippedCount = 0;
 
     // ── Pre-compute NAV: filter out paused purchases and no-NAV gaps ──
@@ -412,11 +437,11 @@ export async function POST(req: NextRequest) {
     await prisma.$transaction(async (tx) => {
       await acquireScheduledTaskPlanLock(tx, planId);
 
+      // 同样把已删除的期次算进来：删除即「不该有」，并发补记也不能把它重新造出来。
       const existingAtCommit = await tx.fundTransaction.findMany({
         where: {
           regularInvestPlanId: planId,
           source: "regular_invest",
-          deletedAt: null,
           applyDate: { in: runsToCreate.map((run) => run.runDate) },
         },
         select: { applyDate: true },
@@ -596,7 +621,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       ok: true,
-      message: `已执行基金定投 ${plan.fundCode}，生成 ${actualCreatedCount} 条交易明细${totalFailedCount > 0 ? `（暂停申购退回 ${totalFailedCount} 笔）` : ""}${skippedCount + skippedDuplicateAtCommit > 0 ? `（跳过 ${skippedCount + skippedDuplicateAtCommit} 个已处理或无净值日期）` : ""}`,
+      message: `已执行基金定投 ${plan.fundCode}，生成 ${actualCreatedCount} 条交易明细${totalFailedCount > 0 ? `（暂停申购退回 ${totalFailedCount} 笔）` : ""}${skippedCount + skippedDuplicateAtCommit > 0 ? `（跳过 ${skippedCount + skippedDuplicateAtCommit} 个已处理或无净值日期）` : ""}${remainingDueCount > 0 ? `（还有 ${remainingDueCount} 个到期期次未生成，请再次执行）` : ""}`,
       executedCount: actualCreatedCount,
       skippedCount: skippedCount + skippedDuplicateAtCommit,
       completed: plan.totalRuns && plan.executedRuns + actualCreatedCount >= plan.totalRuns,

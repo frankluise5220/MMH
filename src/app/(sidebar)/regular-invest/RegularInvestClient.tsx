@@ -476,6 +476,21 @@ function todayInput(): string {
   return todayDateLocalYmd();
 }
 
+/**
+ * 基金定投「执行」前的净值预加载起点。必须和服务端的补记起点同源：
+ * 从计划的「下个执行日」开始（用户把游标拨到过去，就补记那段历史），
+ * 没有游标时才退回 lastRunDate / startDate。游标在未来时不预加载。
+ */
+function preloadStartDateFor(
+  plan: Pick<RegularInvestPlanView, "nextRunDate" | "lastRunDate" | "startDate">,
+  endDate: string,
+): string {
+  const cursor = toDateInput(plan.nextRunDate);
+  const fallback = (plan.lastRunDate ? toDateInput(plan.lastRunDate) : toDateInput(plan.startDate)) || endDate;
+  const start = cursor || fallback;
+  return start <= endDate ? start : endDate;
+}
+
 function formatScheduleRate(rate: number | null): string {
   if (rate == null || !Number.isFinite(rate)) return "-";
   return `${rate.toFixed(3).replace(/\.?0+$/, "")}%`;
@@ -1213,10 +1228,11 @@ export function RegularInvestClient({
     try {
       if (taskType === "fund_regular_invest" && plan?.fundCode) {
         setExecutionProgress((prev) => prev ? { ...prev, currentLabel: t("regularInvest.client.execute.preloadingNav") } : prev);
-        const startDate = plan.lastRunDate
-          ? toDateInput(plan.lastRunDate)
-          : toDateInput(plan.startDate) || todayInput();
         const endDate = todayInput();
+        // 执行起点是计划的「下个执行日」（服务端按它补记），净值预加载必须跟着它走：
+        // 用户把下个执行日回拨到过去某天，预加载若仍从 lastRunDate 开始，
+        // 补记的期次会拿不到历史净值。
+        const startDate = preloadStartDateFor(plan, endDate);
         try {
           await fetch("/api/v1/fund/preload-nav", {
             method: "POST",
@@ -1297,9 +1313,7 @@ export function RegularInvestClient({
       for (const plan of activePlans) {
         if (getPlanTaskType(plan) !== "fund_regular_invest" || !plan.fundCode) continue;
         setExecutionProgress((prev) => prev ? { ...prev, currentLabel: t("regularInvest.client.executeAll.preloadNav", { name: getPlanDisplayName(plan) }) } : prev);
-        const preloadStart = plan.lastRunDate
-          ? toDateInput(plan.lastRunDate)
-          : toDateInput(plan.startDate) || todayInput();
+        const preloadStart = preloadStartDateFor(plan, endDate);
         try {
           await fetch("/api/v1/fund/preload-nav", {
             method: "POST",

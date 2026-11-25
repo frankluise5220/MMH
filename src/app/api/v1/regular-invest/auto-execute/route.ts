@@ -60,6 +60,16 @@ type AutoExecuteRoundResult = {
   blockedPlanIds: string[];
 };
 
+/**
+ * 一个执行周期大约多少自然日 —— 只用来判断「游标落后是否超过一个周期」。
+ * 目的不是精确日历，而是给「当期 vs 历史」划一条界：日频漏 1 天仍自动补，
+ * 漏 2 天以上就交给用户确认；月频漏 19 天（月内）仍自动补。
+ */
+function intervalPeriodDays(unit: string, value: number | null | undefined) {
+  const perUnit = unit === "day" ? 1 : unit === "week" ? 7 : unit === "month" ? 30 : unit === "year" ? 365 : 1;
+  return Math.max(1, perUnit * Math.max(1, value ?? 1));
+}
+
 /** Are there still active plans with a due next run? */
 async function hasMoreDuePlans(householdId: string, now: Date) {
   const where: Prisma.RegularInvestPlanWhereInput = {
@@ -352,6 +362,23 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
       const cashAcc = plan.cashAccountId ? cashAccMap.get(plan.cashAccountId) ?? null : null;
       const runDate = skipWeekend(new Date(plan.nextRunDate));
       const runDateStr = formatDateUtc(runDate);
+      // 后台自动执行只负责「当期」这一期，不替用户补历史。
+      // 游标落后超过一个周期时（日频 >1 天、周频 >1 周、月频 >1 月）一律不落账：
+      // 否则每打开一次页面就补一期，用户删掉一期又冒出下一期，看起来就是「删掉的记录被恢复了」。
+      // 历史缺口交给用户在计划任务面板显式「批量补记」/「执行」，那里有墓碑去重和明确意图。
+      const lagDays = Math.floor(
+        (Date.parse(`${todayStr}T00:00:00Z`) - Date.parse(`${runDateStr}T00:00:00Z`)) / 86400000,
+      );
+      if (lagDays > intervalPeriodDays(plan.intervalUnit, plan.intervalValue)) {
+        skipped.push(plan.id);
+        details.push({
+          planId: plan.id,
+          fundCode: plan.fundCode,
+          action: "skipped",
+          reason: `已落后 ${lagDays} 天（超过一个执行周期），需在计划任务里确认补记`,
+        });
+        continue;
+      }
       const fundDateContext = await getFundDateContext(plan.accountId, plan.fundCode);
       let confirmDateStr = fundConfirmDate(runDateStr, fundDateContext.days, fundDateContext.tradingCalendar);
       if (confirmDateStr < runDateStr) {

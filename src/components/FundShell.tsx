@@ -3881,7 +3881,7 @@ export function FundShell(props: Props) {
         fallbackFundName={fundSettingsName}
         funds={fundSettingsFunds}
         onFundChange={handleFundSettingsChange}
-        investmentAccounts={investmentAccounts}
+        investmentAccounts={fundAccountOptions}
         cashAccounts={cashAccounts}
         investmentAccountSSOptions={investmentAccountSSOptions}
         cashAccountSSOptions={cashAccountSSOptions}

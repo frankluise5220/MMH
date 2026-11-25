@@ -154,7 +154,6 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
     local: { username: "", password: "", userId: "" },
     mmh: { username: "", password: "", userId: "" },
   });
-  const [fnosEmail, setFnosEmail] = useState("");
   const [pendingFnos, setPendingFnos] = useState(false);
   const [systemUsers, setSystemUsers] = useState<LoginUserChoice[]>([]);
   // Ledger users this fnOS gateway identity is bound to. The fnOS tab labels
@@ -923,7 +922,6 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...(scopeId && scopeId !== SYSTEM_LOGIN_SCOPE_ID ? { householdId: scopeId } : {}),
-          ...(fnosEmail.trim() ? { email: fnosEmail.trim() } : {}),
         }),
       });
       const contentType = res.headers.get("content-type") ?? "";
@@ -1688,23 +1686,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                         {t(selectedHouseholdBindsFnosAccount ? "login.fnosNoLedgerOtherAccount" : "login.fnosNoLedgerUnbound")}
                       </div>
                     </div>
-                  ) : (
-                  <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">{t("login.fnosEmailOptional")}</div>
-                    <input
-                      value={fnosEmail}
-                      onChange={(event) => {
-                        setFnosEmail(event.target.value);
-                        cancelHouseholdChoice();
-                      }}
-                      type="email"
-                      autoComplete="email"
-                      className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                      placeholder={t("login.fnosEmailPlaceholder")}
-                    />
-                    <div className="text-[11px] text-slate-500">{t("login.fnosEmailHint")}</div>
-                  </div>
-                  )}
+                  ) : null}
                 </div>
                 ) : loginMode === "local" ? (
                 <div className="space-y-1">

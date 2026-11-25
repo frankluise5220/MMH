@@ -471,6 +471,7 @@ export function RegularInvestForm({
   nestedFieldData,
   prefilledFundCode,
   prefilledFundName,
+  prefilledAccountId,
   prefilledCashAccountId,
   prefilledFeeRate,
   prefilledConfirmDays,
@@ -528,6 +529,11 @@ export function RegularInvestForm({
   nestedFieldData?: NestedFieldData;
   prefilledFundCode?: string;
   prefilledFundName?: string | null;
+  /**
+   * 新建时默认选中的投资账户。资料页（某个基金）里点「新增计划」时用来把当前账户带上：
+   * 一旦传了 investmentAccounts，账户下拉默认是空的，必须靠它回填。
+   */
+  prefilledAccountId?: string | null;
   prefilledCashAccountId?: string | null;
   prefilledFeeRate?: number | string | null;
   prefilledConfirmDays?: number | null;
@@ -705,7 +711,8 @@ export function RegularInvestForm({
     }
     return {
       taskType: "fund_regular_invest",
-      accountId: investmentAccounts && investmentAccounts.length > 0 ? "" : accountId,
+      accountId: prefilledAccountId
+        || (investmentAccounts && investmentAccounts.length > 0 ? "" : accountId),
       fundCode: prefilledFundCode ?? "",
       fundName: prefilledFundName ?? "",
       planName: prefilledFundName ?? "",
@@ -1675,7 +1682,10 @@ export function RegularInvestForm({
         open={actualOpen}
         heightKey="regularInvest"
         // 宽度和高度一样固定：页签切换不再变宽变窄。
-        width="md"
+        // 宽度必须容得下全部页签：FT 页签组按「N × 最长标签」等宽排布（这里 7 个：
+        // 基金定投/贵金属积存/转账/还贷款/保费缴费/收入/支出，约 830px），
+        // 档位窄了页签条会顶出卡片右边（md 608 时溢出 33px、最后一个页签露出卡片外）。
+        width="2xl"
         title={title}
         onClose={() => setActualOpen(false)}
         onSubmit={onSubmit}

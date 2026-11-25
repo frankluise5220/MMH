@@ -477,6 +477,9 @@ function toSidebarAccountItem(a: any, t: (key: string, params?: Record<string, s
     parentId: a.parentId ?? null,
     isAggregate: a.isAggregate === true,
     creditBillStorageId: a.creditBillStorageId ?? null,
+    // 合并账单组键由 `/api/v1/accounts/internal` 一并返回。余额刷新会用这里
+    // 重建整个侧边栏列表，漏掉它侧边栏的折叠会立刻失效（只剩逐张卡）。
+    creditBillGroupKey: a.creditBillGroupKey ?? null,
   };
 }
 

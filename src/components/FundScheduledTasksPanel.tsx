@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2, Pause, Pencil, Play } from "lucide-react";
+import { Loader2, Pause, Pencil, Play, Plus } from "lucide-react";
 
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
@@ -154,12 +154,15 @@ export function FundScheduledTasksPanel({
   fundCode,
   preloadedPlans,
   onEdit,
+  onCreate,
   reloadToken,
 }: {
   accountId: string;
   fundCode: string;
   preloadedPlans?: RelatedScheduledTask[];
   onEdit?: (plan: RelatedScheduledTask) => void;
+  /** 直接在本面板里新增一只本基金的定投计划，不再跳到计划任务视图。 */
+  onCreate?: () => void;
   reloadToken?: number;
 }) {
   const { t } = useI18n();
@@ -235,25 +238,47 @@ export function FundScheduledTasksPanel({
     }
   }, [accountId, fundCode, t]);
 
+  const createButton = onCreate ? (
+    <div className="flex items-center justify-end">
+      <button
+        type="button"
+        onClick={onCreate}
+        className="inline-flex h-7 items-center gap-1 rounded-md border border-indigo-200 bg-indigo-50 px-2 text-xs font-medium text-indigo-700 hover:bg-indigo-100"
+        title={t("regularInvest.client.addPlan")}
+        aria-label={t("regularInvest.client.addPlan")}
+      >
+        <Plus className="h-3.5 w-3.5" />
+        {t("regularInvest.client.addPlan")}
+      </button>
+    </div>
+  ) : null;
+
   if (loading && tasks.length === 0) {
     return (
-      <div className="flex h-20 items-center justify-center rounded-md border border-slate-200 bg-white text-sm text-slate-400">
-        <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-        {t("common.loading")}
+      <div className="space-y-2">
+        {createButton}
+        <div className="flex h-20 items-center justify-center rounded-md border border-slate-200 bg-white text-sm text-slate-400">
+          <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+          {t("common.loading")}
+        </div>
       </div>
     );
   }
 
   if (tasks.length === 0) {
     return (
-      <div className="rounded-md border border-dashed border-slate-200 bg-slate-50/60 px-3 py-3 text-xs text-slate-400">
-        {error || t("fundSettings.scheduledTaskEmpty")}
+      <div className="space-y-2">
+        {createButton}
+        <div className="rounded-md border border-dashed border-slate-200 bg-slate-50/60 px-3 py-3 text-xs text-slate-400">
+          {error || t("fundSettings.scheduledTaskEmpty")}
+        </div>
       </div>
     );
   }
 
   return (
     <div className="space-y-2">
+      {createButton}
       <div className="max-h-[160px] overflow-auto rounded-md border border-slate-200">
         <table className="w-full border-collapse text-xs">
           <thead className="bg-slate-50">

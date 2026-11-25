@@ -170,22 +170,25 @@ export async function executeNonFundScheduledTaskPlan(params: {
           // 计划的执行日撞上这些日期时会**重复生成**（「每年执行 2 次」的成因）。
           // 注意：不能用 `fundSubtype: { not: "redeem" }` 之类替代 —— 该字段与保单无关。
           insuranceAction: { in: ["premium", "additional_premium"] },
-          deletedAt: null,
         }
       : {
           householdId,
           regularInvestPlanId: plan.id,
           source: { in: sourceFilter },
-          deletedAt: null,
         },
-    select: { date: true },
+    // 不看 deletedAt：被删掉的那一期是一块「墓碑」，仍然算该日期已经生成过。
+    // 用户删掉一期就是在说「这一期不该有」，游标落后（计划暂停后重启、补记历史）时
+    // 不能把它当成「还没执行」重新造出来（2026-11-24 基金定投删掉又复现的同源缺陷）。
+    select: { date: true, deletedAt: true },
   });
   const existingDates = new Set(existingTxRecords.map((record) => formatDateUtc(record.date)));
   const remainingRuns = plan.totalRuns ? Math.max(0, plan.totalRuns - plan.executedRuns) : Number.POSITIVE_INFINITY;
   const datesToProcess: Date[] = [];
-  const firstExistingDate = existingTxRecords[0]?.date ?? null;
+  // 统计（已执行条数/金额）只算未删除的记录，墓碑只用来去重。
+  const aliveExistingRecords = existingTxRecords.filter((record) => !record.deletedAt);
+  const firstExistingDate = aliveExistingRecords[0]?.date ?? null;
   const latestExistingDate = firstExistingDate
-    ? existingTxRecords.reduce((latest, record) => (record.date > latest ? record.date : latest), firstExistingDate)
+    ? aliveExistingRecords.reduce((latest, record) => (record.date > latest ? record.date : latest), firstExistingDate)
     : null;
 
   if (params.overrideDate) {
@@ -219,8 +222,8 @@ export async function executeNonFundScheduledTaskPlan(params: {
       executedRuns: plan.executedRuns,
       completed: false,
       stats: {
-        executedCount: existingTxRecords.length,
-        executedAmount: existingTxRecords.length * amountNum,
+        executedCount: aliveExistingRecords.length,
+        executedAmount: aliveExistingRecords.length * amountNum,
         confirmedCount: 0,
         confirmedAmount: 0,
         plan: {

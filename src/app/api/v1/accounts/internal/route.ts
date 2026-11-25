@@ -11,6 +11,7 @@ import {
   loadCreditCardBillGroupBalances,
   sumCreditBalancesByBillGroup,
 } from "@/lib/server/credit-card-display-balance";
+import { creditBillGroupKey as buildCreditBillGroupKey } from "@/lib/server/credit-card-institution-settings";
 import { buildAccountDisplayOption, type AccountLabelField, type AccountRenderSettings, accountRenderSettings } from "@/lib/account-display";
 import { getServerAccountLabelFields } from "@/lib/server/account-label-fields";
 import { convertCurrencyAmounts, getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
@@ -171,6 +172,9 @@ export async function GET(request: Request) {
           ...a,
           balance: creditDisplayBalance ?? a.balance,
           creditBillStorageId: creditBillStorageIdByAccountId.get(a.id) ?? a.id,
+          // 侧边栏折叠「机构·信用卡」以这个键分组：余额刷新重建列表时必须
+          // 原样带回，否则折叠立刻退化成逐张卡（RSC 首屏有、刷新后没了）。
+          creditBillGroupKey: a.creditBillMode === "consolidated" ? buildCreditBillGroupKey(a) : null,
         };
       }
       if (a.kind === AccountKind.loan || a.kind === AccountKind.settlement) {
