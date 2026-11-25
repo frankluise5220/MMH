@@ -140,7 +140,7 @@ import {
 } from "@/lib/server/detail-page-query";
 import { normalizeDetailFilters, parseDetailDateRange, parseDetailSort } from "@/lib/server/detail-query-filters";
 import { isDepositRedemptionDateAllowed, loadLatestDepositInterestDate } from "@/lib/server/deposit-lot-balance";
-import { ensureDepositPlansForLot } from "@/lib/server/deposit-plan-tasks";
+import { ensureDepositPlansForLot, runDueDepositPlansForLot } from "@/lib/server/deposit-plan-tasks";
 
 export const runtime = "nodejs";
 
@@ -3557,6 +3557,11 @@ export async function POST(req: Request) {
       await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: createdId }).catch(
         logger.catchLog("sync independent business transaction", "route.ts"),
       );
+      // 存单刚落地就立刻跑它自己的到期动作（生息/取息/到期），不等下一次页面自检，
+      // 避免「加进去很久才有利息记录」。非存单条目在这里是空转（无存款计划即返回）。
+      await runDueDepositPlansForLot({ householdId, lotId: createdId }).catch(
+        logger.catchLog("run due deposit plans", "route.ts"),
+      );
     }
     if (createdId) {
       const createdAccounts = await prisma.txRecord.findMany({
@@ -4792,6 +4797,9 @@ return;
     for (const lotId of depositLotIdsToRefresh) {
       await ensureDepositPlansForLot({ householdId, lotId }).catch(
         logger.catchLog("refresh deposit plans after detail edit", "route.ts"),
+      );
+      await runDueDepositPlansForLot({ householdId, lotId }).catch(
+        logger.catchLog("run due deposit plans after detail edit", "route.ts"),
       );
     }
 

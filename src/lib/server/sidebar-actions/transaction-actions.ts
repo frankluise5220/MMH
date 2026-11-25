@@ -1662,6 +1662,14 @@ export async function createTransaction(formData: FormData) {
         await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: createdInvestmentEntryId }).catch((e) => {
           console.error("createTransaction sync independent business transaction:", e);
         });
+        if (fundProductType === "deposit") {
+          // 存单刚落地就立刻跑它自己的到期动作（生息/取息/到期），
+          // 不等下一次页面自检，避免「加进去很久才有利息记录」。
+          const { runDueDepositPlansForLot } = await import("@/lib/server/deposit-plan-tasks");
+          await runDueDepositPlansForLot({ householdId, lotId: createdInvestmentEntryId }).catch((e) => {
+            console.error("createTransaction run due deposit plans:", e);
+          });
+        }
       }
 
       if (sourceValue !== "insurance" && fundProductType === "metal" && finalInvestmentAccId) {
@@ -2905,6 +2913,16 @@ export async function editInvestment(formData: FormData) {
     await applyEntryChangesToAccountBalances(Array.from(balanceChangesToApply.values())).catch((e) => {
       console.error("editInvestment update account balances:", e);
     });
+    if (depositLotIdsToRefresh.size > 0) {
+      // 条款改完立刻按新条款补跑到期动作，不必等下一次页面自检。
+      // 放在余额改动落地之后，避免计划生成的流水先占住旧余额。
+      const planTasks = await import("@/lib/server/deposit-plan-tasks");
+      await Promise.all([...depositLotIdsToRefresh].map((lotId) =>
+        planTasks.runDueDepositPlansForLot({ householdId, lotId }).catch((e) => {
+          console.error("editInvestment run due deposit plans:", e);
+        }),
+      ));
+    }
 
     // Recalculate positions: if the fund account changed, recalculate both the old and new accounts.
     const finalInvestmentAccId = newToAccountId ?? oldInvestmentAccId;
@@ -3239,13 +3257,17 @@ export async function renewDeposit(
     }
 
     // 计划行：旧存单结清后其 depm_/depi_ 置完成（不再提醒），新存单生成自己的计划。
-    const { ensureDepositPlansForLot } = await import("@/lib/server/deposit-plan-tasks");
+    const { ensureDepositPlansForLot, runDueDepositPlansForLot } = await import("@/lib/server/deposit-plan-tasks");
     await ensureDepositPlansForLot({ householdId, lotId: buy.id }).catch((e) => {
       console.error("renewDeposit refresh closed lot plans:", e);
     });
     if (newLotId) {
       await ensureDepositPlansForLot({ householdId, lotId: newLotId }).catch((e) => {
         console.error("renewDeposit create successor lot plans:", e);
+      });
+      // 续存出的新存单若本身已到期/已到付息日，当场补跑，不等下一次页面自检。
+      await runDueDepositPlansForLot({ householdId, lotId: newLotId }).catch((e) => {
+        console.error("renewDeposit run due deposit plans:", e);
       });
     }
 

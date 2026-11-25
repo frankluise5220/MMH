@@ -381,7 +381,6 @@ async function withdrawAccruedBondInterest(params: BondWithdrawParams): Promise<
       note: transferNote,
       regularInvestPlanId: params.planId ?? null,
     }),
-    recalcAccountIds: [bondAccount.id, cashAccount.id],
   });
   if (result.status !== "accrued") return { status: "skipped", reason: "没有待取出的利息" };
 

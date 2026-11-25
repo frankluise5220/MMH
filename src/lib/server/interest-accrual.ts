@@ -1,7 +1,7 @@
 import { Prisma, RegularInvestStatus } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
-import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
+import { applyEntryChangesToAccountBalances } from "@/lib/server/account-balance";
 
 /**
  * 定期生息产品的公共编排件（存款 / 债券共用）。
@@ -89,8 +89,6 @@ export async function createInterestTransfers(params: {
   /** 调用方已按自己的口径筛过的待转出利息。 */
   pending: InterestIncomeRow[];
   buildTransfer: (income: InterestIncomeRow, amount: number) => Prisma.TxRecordCreateManyInput;
-  /** 转出后需要重算的账户（出账方 + 入账方）。 */
-  recalcAccountIds?: Array<string | null | undefined>;
 }): Promise<InterestAccrualResult> {
   const entryIds: string[] = [];
   let totalInterest = 0;
@@ -105,10 +103,12 @@ export async function createInterestTransfers(params: {
 
   if (entryIds.length === 0) return { status: "skipped", reason: "no pending interest" };
 
-  for (const accountId of params.recalcAccountIds ?? []) {
-    if (!accountId) continue;
-    await recalcAndSaveAccountBalance(accountId).catch(() => {});
-  }
+  // 余额口径交给公共增量入口按**本次新建的转账行**推导（出账方 + 入账方都由行自身
+  // 决定），不再由调用方逐个账户整账重算：一次「6 千行借记卡」的全量折叠约 1.2 s，
+  // 而生息/取息是挂在保存请求和 10 分钟后台轮次上的高频动作。增量不可安全判断的
+  // 账户类型（存款账户的现金价值、信用卡账单周期）在 apply 内部仍会退回全量重算，
+  // 失败则标脏交给 bootstrapPendingAccountBalances 兜底。
+  await applyEntryChangesToAccountBalances(entryIds.map((entryId) => ({ entryId })));
   return { status: "accrued", pairs: entryIds.length, totalInterest, entryIds };
 }
 

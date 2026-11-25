@@ -6,6 +6,7 @@ import { runStatementMailAutoImportTick } from "@/lib/server/statement-mail-auto
 import { syncPropertyAssetDepreciations } from "@/lib/server/property-depreciation";
 import { accrueMoneyFundIncome } from "@/lib/server/money-fund-income-accrual";
 import { accrueWalletMoneyFundIncome } from "@/lib/server/wallet-money-fund-income";
+import { runDueDepositPlansForHousehold } from "@/lib/server/deposit-plan-tasks";
 import { logger } from "@/lib/logger";
 
 /**
@@ -26,11 +27,13 @@ export async function runDueSystemTasks(): Promise<{
   statementMailAutoImports: number;
   propertyDepreciations: number;
   moneyFundIncomeAccruals: number;
+  depositPlanInterestRows: number;
 }> {
   const households = await prisma.household.findMany({ select: { id: true } });
   let materializedInstallments = 0;
   let propertyDepreciations = 0;
   let moneyFundIncomeAccruals = 0;
+  let depositPlanInterestRows = 0;
   for (const household of households) {
     try {
       const result = await materializeDueInstallmentPayments(prisma, { householdId: household.id });
@@ -64,6 +67,16 @@ export async function runDueSystemTasks(): Promise<{
     } catch (error) {
       logger.error("wallet money fund income accrual failed for household", "system-task", { householdId: household.id, error });
     }
+    // 存款到期/取息：历史上只由「浏览器打开页面时的一次性自检」触发，用户不开页面
+    // 就永远不生成利息（用户报的「生成记录要很久」就是这个）。放到服务端 10 分钟
+    // 轮次上之后与是否开页面无关；保存路径仍会当场跑一次以保证即时性，
+    // 两者由执行器内部的 runExclusive 互斥、幂等去重。
+    try {
+      const result = await runDueDepositPlansForHousehold({ householdId: household.id });
+      depositPlanInterestRows += result.pairs;
+    } catch (error) {
+      logger.error("deposit plan execution failed for household", "system-task", { householdId: household.id, error });
+    }
   }
   if (materializedInstallments > 0) {
     logger.info(`system task materialized ${materializedInstallments} installment rows`, "system-task");
@@ -90,11 +103,15 @@ export async function runDueSystemTasks(): Promise<{
     logger.error("statement mail auto import tick failed", "system-task", { error });
     return { ran: 0, created: 0, failed: 0 };
   });
+  if (depositPlanInterestRows > 0) {
+    logger.info(`system task generated ${depositPlanInterestRows} deposit interest rows`, "system-task");
+  }
   return {
     materializedInstallments,
     bootstrappedAccountBalances,
     statementMailAutoImports: mailAutoImports.created,
     propertyDepreciations,
     moneyFundIncomeAccruals,
+    depositPlanInterestRows,
   };
 }

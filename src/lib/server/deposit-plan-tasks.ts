@@ -11,9 +11,9 @@ import {
   type DepositInterestPayoutUnit,
 } from "@/lib/deposit-interest-payout";
 import { depositSegmentInterest, round2 } from "@/lib/deposit-maturity";
-import { encodeScheduledTaskMemo, type ScheduledTaskPayload } from "@/lib/scheduled-task";
+import { decodeScheduledTaskMemo, encodeScheduledTaskMemo, type ScheduledTaskPayload } from "@/lib/scheduled-task";
 import { loadDepositLotBalance } from "@/lib/server/deposit-lot-balance";
-import { completeSystemPlansForLot, upsertSystemPlan } from "@/lib/server/interest-accrual";
+import { completeSystemPlansForLot, runSingleFlight, upsertSystemPlan } from "@/lib/server/interest-accrual";
 
 /**
  * Refresh both system plans after a deposit redemption. Partial redemption
@@ -547,5 +547,135 @@ export async function executeDepositPlan(params: {
       ? `已生成 ${outcome.pairs} 期利息${isAccrual ? "（不转账）" : "（收入+转账）"}`
       : outcome.reason ?? "无需生成",
   };
+}
+
+/**
+ * 存单刚保存 / 刚改动后立刻跑一遍它的到期动作。
+ *
+ * 为什么需要：计划任务原本只由「浏览器打开页面时的一次性自检」
+ * （DailyTaskCheck → POST /api/v1/regular-invest/auto-execute）或用户手点「执行」触发，
+ * 存单录完不刷新页面就会一直停在「执行中 0 笔」，看起来像利息根本没生成；
+ * 而自检在一次页面会话里只跑一遍，SPA 内跳转不会重新触发，于是用户感知到
+ * 「加进去以后过了很久才执行」。
+ *
+ * 这里复用与自动执行 / 手动执行完全相同的 executeDepositPlan，口径一致：
+ * 排期推进、已生成期次去重（coveredDays、墓碑）都在执行器内部完成，
+ * 因此重复调用安全；任何一笔失败都只记日志，不影响用户保存存单本身。
+ */
+export async function runDueDepositPlansForLot(params: {
+  householdId: string;
+  lotId: string;
+  now?: Date;
+}): Promise<{ executed: number; pairs: number }> {
+  const { householdId, lotId } = params;
+  const now = params.now ?? new Date();
+  if (!lotId) return { executed: 0, pairs: 0 };
+  let executed = 0;
+  let pairs = 0;
+  // 最多 3 轮：一轮通常能推进完（生息一次补齐所有欠期），多轮只用于兜住
+  // 「执行后仍落在今天或更早」的连环场景（如到期续存后紧接着再取息）。
+  for (let round = 0; round < 3; round += 1) {
+    const plans = await prisma.regularInvestPlan.findMany({
+      where: {
+        householdId,
+        status: RegularInvestStatus.active,
+        id: { in: [`depa_${lotId}`, `depi_${lotId}`, `depm_${lotId}`] },
+        nextRunDate: { lte: now },
+      },
+      select: { id: true, memo: true, startDate: true, nextRunDate: true, accountId: true, planAction: true },
+    });
+    if (plans.length === 0) break;
+    // 顺序与列表一致：先生息、再取息、最后到期，避免同一轮里取息读不到刚生成的利息。
+    plans.sort((a, b) => depositPlanExecutionOrder(a.id) - depositPlanExecutionOrder(b.id));
+    let succeededInRound = 0;
+    for (const plan of plans) {
+      const task = decodeScheduledTaskMemo(plan.memo);
+      if (!isDepositPlanTask(task.type)) continue;
+      if (!plan.accountId) continue;
+      try {
+        const result = await executeDepositPlan({
+          householdId,
+          plan: { ...plan, accountId: plan.accountId },
+          task,
+          now,
+        });
+        succeededInRound += 1;
+        if (result.executed) executed += 1;
+        pairs += result.pairs;
+      } catch (error) {
+        console.error("runDueDepositPlansForLot execute failed", plan.id, error);
+      }
+    }
+    // 整轮一个都没跑成（如表格尚未就绪 / 运行环境异常）就不再重试，
+    // 把补跑留给下一次页面自检，避免同一处错误被连打三次。
+    if (succeededInRound === 0) break;
+  }
+  return { executed, pairs };
+}
+
+/**
+ * 后台定时任务入口：把整个账簿里所有到期的存款计划按存单分组，逐张跑一遍。
+ *
+ * 为什么必须有这条：存款到期/取息历史上只由「浏览器打开页面时的一次性自检」
+ * （DailyTaskCheck → auto-execute）或用户手点「执行」触发，用户几天不开页面利息
+ * 就一直不生成 —— 这才是「生成记录要很久」的根因。挂到 `runDueSystemTasks`
+ * 的 10 分钟轮次上之后，与浏览器是否打开无关；保存路径的
+ * `runDueDepositPlansForLot` 只负责「当场就有」的即时性。
+ *
+ * 与保存路径/页面自检并发安全：同一张存单由 `runExclusive` 互斥，抢不到的一方
+ * 直接跳过、下一轮补跑（执行器幂等，已生成的期次不会重复）。
+ * `runSingleFlight` 让同账簿的两轮扫描复用同一次结果。
+ */
+export async function runDueDepositPlansForHousehold(params: {
+  householdId: string;
+  now?: Date;
+  limit?: number;
+}): Promise<{ lots: number; executed: number; pairs: number }> {
+  const now = params.now ?? new Date();
+  return runSingleFlight(`deposit-plans:${params.householdId}`, async () => {
+    const duePlans = await prisma.regularInvestPlan.findMany({
+      where: {
+        householdId: params.householdId,
+        status: RegularInvestStatus.active,
+        nextRunDate: { lte: now },
+        OR: [
+          { id: { startsWith: "depa_" } },
+          { id: { startsWith: "depi_" } },
+          { id: { startsWith: "depm_" } },
+        ],
+      },
+      select: { id: true },
+      orderBy: { nextRunDate: "asc" },
+      take: params.limit ?? 200,
+    });
+    const lotIds: string[] = [];
+    const seen = new Set<string>();
+    for (const plan of duePlans) {
+      // depa_/depi_/depm_ 都是 5 字符前缀 + 存单 id。
+      const lotId = plan.id.slice(5);
+      if (!lotId || seen.has(lotId)) continue;
+      seen.add(lotId);
+      lotIds.push(lotId);
+    }
+    let executed = 0;
+    let pairs = 0;
+    for (const lotId of lotIds) {
+      const result = await runDueDepositPlansForLot({ householdId: params.householdId, lotId, now }).catch(
+        (error) => {
+          console.error("runDueDepositPlansForHousehold failed for lot", lotId, error);
+          return { executed: 0, pairs: 0 };
+        },
+      );
+      executed += result.executed;
+      pairs += result.pairs;
+    }
+    return { lots: lotIds.length, executed, pairs };
+  });
+}
+
+function depositPlanExecutionOrder(planId: string): number {
+  if (planId.startsWith("depa_")) return 0;
+  if (planId.startsWith("depi_")) return 1;
+  return 2;
 }
 

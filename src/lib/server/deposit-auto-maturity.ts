@@ -19,8 +19,8 @@ import {
   round2,
   utcDayStart,
 } from "@/lib/deposit-maturity";
-import { getServerT } from "@/lib/server/i18n";
-import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
+import { getServerTSafe } from "@/lib/server/i18n";
+import { applyEntryChangesToAccountBalances, recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import {
   createInterestTransfers,
   runExclusive,
@@ -518,7 +518,7 @@ async function autoAccruePeriodicInterest(
     });
   }
 
-  const t = await getServerT();
+  const t = await getServerTSafe(householdId);
   const interestCategory = await resolveCategorySnapshot(prisma, householdId, {
     categoryName: SYSTEM_DEPOSIT_INTEREST_CATEGORY,
     type: "income",
@@ -625,8 +625,11 @@ async function autoAccruePeriodicInterest(
   }
 
   if (pairs > 0) {
-    await recalcAndSaveAccountBalance(depositAccount.id).catch(() => {});
-    await recalcAndSaveAccountBalance(payoutCashAccount.id).catch(() => {});
+    // 只按本次新建的 2N 行维护余额：存款账户（现金价值口径）在公共入口内部仍走
+    // 整账重算（该账户只有个位数存款流水），付息到账的资金账户则走增量 delta。
+    // 以前两个账户一律整账折叠，遇到「到账账户是 6 千行借记卡」时单次约 1.2 s，
+    // 而这段代码现在既在保存请求里跑、也在 10 分钟后台轮次里跑。
+    await applyEntryChangesToAccountBalances(createdEntryIds.map((entryId) => ({ entryId })));
     await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: buy.id }).catch((e) => {
       console.error("autoAccruePeriodicInterest sync buy projection:", e);
     });
@@ -693,7 +696,7 @@ export async function autoWithdrawAccruedInterestForLot(params: {
     },
     select: { date: true, amount: true },
   });
-  const t = await getServerT();
+  const t = await getServerTSafe(params.householdId);
   // 「这笔利息已经转出过」按「日 + 带符号金额」判定：转账金额本身就是负数，
   // 用它和收入的负数对齐。这个口径属于存款，判定留在本文件。
   const covered = new Set(transfers.map((row) => `${utcDayKey(row.date)}|${Number(row.amount)}`));
@@ -719,12 +722,11 @@ export async function autoWithdrawAccruedInterestForLot(params: {
       note: `${t("deposit.renew.payoutTransferNote", { name: buy.fundName ?? "" })}`,
       householdId: buy.householdId,
     }),
-    recalcAccountIds: [depositAccount.id, payoutCashAccount.id],
   });
 }
 
 async function autoRedeemDeposit(buyId: string, householdId: string): Promise<LotOutcome> {
-  const t = await getServerT();
+  const t = await getServerTSafe(householdId);
   const buy = await prisma.txRecord.findFirst({
     where: {
       id: buyId,
