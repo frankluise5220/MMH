@@ -20,9 +20,9 @@ import { formatDateUtc, todayDateBusinessYmd } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { decodeScheduledTaskMemo } from "@/lib/scheduled-task";
-import { calcInitialScheduledRunDate, calcNextScheduledRunDate, skipWeekend } from "@/lib/scheduled-task-date";
+import { calcNextScheduledRunDate, skipWeekend } from "@/lib/scheduled-task-date";
 import { executeNonFundScheduledTaskPlan, isNonFundScheduledTask } from "@/lib/server/scheduled-task-executor";
-import { isConfirmedNavGap } from "@/lib/server/regular-invest-plan";
+import { isConfirmedNavGap, resolveFundBatchExecuteCursor } from "@/lib/server/regular-invest-plan";
 import { executeDepositPlan, isDepositPlanTask } from "@/lib/server/deposit-plan-tasks";
 import { resolveCategorySnapshot } from "@/lib/default-categories";
 import { ENTRY_ORIGIN_SCHEDULED_TASK } from "@/lib/transaction-semantics";
@@ -173,67 +173,55 @@ export async function POST(req: NextRequest) {
       select: {
         id: true,
         applyDate: true,
+        deletedAt: true,
       },
     });
 
-    // Build the set of existing transaction dates
+    // Build the set of existing transaction dates (all = 含墓碑, live = 仅有效记录)
     const existingDates = new Set<string>();
+    const liveDates = new Set<string>();
     for (const tx of existingFundTransactions) {
       if (tx.applyDate) {
         const dateStr = formatDateUtc(tx.applyDate);
         existingDates.add(dateStr);
+        if (!tx.deletedAt) liveDates.add(dateStr);
       }
     }
 
-    // 起点 = 计划的「下个执行日」（游标）。它是用户唯一能手动拨动的旋钮：
-    // 拨到过去某天就是要求「执行」从那天开始补记（确认框承诺"生成所有到期但未执行的明细"），
-    // 拨到未来就是不生成中间期次。此前起点一律取「最近一笔记录 + 一个周期」，
-    // 于是把下个执行日回拨到 10-30 再点执行，只按最近记录补出 11-25 这一期，
-    // 10-30 ~ 11-24 的期次永久缺失；用户改了「下个执行日」却看不到任何效果。
-    // existingDates（含墓碑）仍逐日去重：已生成或被用户删掉的日期不会被重建。
-    let currentDate: Date;
-    if (plan.nextRunDate) {
-      currentDate = plan.nextRunDate;
-    } else if (existingFundTransactions.length > 0) {
-      // Find the latest record date and start from the day after it
-      const latestDate = existingFundTransactions.reduce((max, r) => (r.applyDate > max ? r.applyDate : max), new Date(0));
-      currentDate = calcNextRunDate(
-        latestDate,
-        plan.intervalUnit,
-        plan.intervalValue,
-        plan.executionDay,
-        plan.secondaryExecutionDay,
-      );
-    } else if (plan.lastRunDate) {
-      // 记录被全部删除（连墓碑都没有）：计划游标证明历史期次已经执行过，
-      // 从游标之后继续，绝不允许退回 startDate 把整段历史重新生成一遍。
-      currentDate = calcNextRunDate(
-        plan.lastRunDate,
-        plan.intervalUnit,
-        plan.intervalValue,
-        plan.executionDay,
-        plan.secondaryExecutionDay,
-      );
-    } else {
-      currentDate = calcInitialScheduledRunDate(
-        new Date(plan.startDate),
-        plan.intervalUnit,
-        plan.intervalValue,
-        plan.executionDay,
-        true,
-        plan.secondaryExecutionDay,
-      );
-    }
+    // 起点与去重口径见 resolveFundBatchExecuteCursor：起点由「下个执行日」决定
+    // （用户把游标拨到过去某天，就是要求从那天开始补记），逐日去重仍挡已生成的期次。
+    const latestRecordDate = existingFundTransactions.length > 0
+      ? existingFundTransactions.reduce((max, r) => (r.applyDate > max ? r.applyDate : max), new Date(0))
+      : null;
+    const { startDate: currentDateStart, isBlocked } = resolveFundBatchExecuteCursor({
+      nextRunDate: plan.nextRunDate,
+      lastRunDate: plan.lastRunDate,
+      latestRecordDate,
+      startDate: new Date(plan.startDate),
+      intervalUnit: plan.intervalUnit,
+      intervalValue: plan.intervalValue,
+      executionDay: plan.executionDay,
+      secondaryExecutionDay: plan.secondaryExecutionDay,
+      existingDates,
+      liveDates,
+    });
+    let currentDate: Date = currentDateStart;
 
     // Upper bound of the generation range: endDate (if already passed) or now, whichever is earlier
     const effectiveEndDate = plan.endDate && plan.endDate < now ? plan.endDate : now;
 
     // Collect all dates that should have run but have not yet
     const datesToExecute: Date[] = [];
+    // 区间内「已经有记录、只是这轮不再生成」的最晚日期。补记时最后一期往往已经存在，
+    // 若游标只看本轮新建的期次，它就会停在那个已存在的日期上（比如 11-25），
+    // 下一轮自动执行又会把同一期当成到期去跑。游标必须越过它。
+    let lastSettledDuplicateDate: Date | null = null;
     while (currentDate <= effectiveEndDate) {
       const dateStr = formatDateUtc(currentDate);
-      if (!existingDates.has(dateStr)) {
+      if (!isBlocked(dateStr, currentDate)) {
         datesToExecute.push(new Date(currentDate));
+      } else if (!lastSettledDuplicateDate || currentDate > lastSettledDuplicateDate) {
+        lastSettledDuplicateDate = new Date(currentDate);
       }
       currentDate = calcNextRunDate(
         currentDate,
@@ -548,7 +536,13 @@ export async function POST(req: NextRequest) {
 
       // Update the regular investment plan status
       const finalExecutedRuns = plan.executedRuns + actualRunsToCreate.length;
-      const finalLastRunDate = actualRunsToCreate[actualRunsToCreate.length - 1]!.runDate;
+      const lastCreatedRunDate = actualRunsToCreate[actualRunsToCreate.length - 1]!.runDate;
+      // 游标 = 本轮覆盖到的最晚日期（新建的期次 或 区间内已存在的期次），见 lastSettledDuplicateDate 注释。
+      // 本轮被 MAX_RUNS_PER_EXECUTE 截断时不越过已存在期次，否则剩下的期次会被永久跳过。
+      const finalLastRunDate =
+        remainingDueCount === 0 && lastSettledDuplicateDate && lastSettledDuplicateDate > lastCreatedRunDate
+          ? lastSettledDuplicateDate
+          : lastCreatedRunDate;
       const nextRunDate = calcNextRunDate(
         finalLastRunDate,
         plan.intervalUnit,

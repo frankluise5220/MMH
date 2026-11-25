@@ -116,3 +116,92 @@ export async function deriveRegularInvestNextRunDate(
     plan.secondaryExecutionDay,
   );
 }
+
+/**
+ * 基金定投「批量执行/补记」的起点与去重口径。
+ *
+ * 起点 = 计划的「下个执行日」（`nextRunDate`）——它是用户唯一能手动拨动的游标：
+ * 拨到过去某天，就是要求从那天开始补记（确认框承诺「生成所有到期但未执行的明细」）；
+ * 拨到未来，就是不生成中间期次。此前起点一律取「最近一笔记录 + 一个周期」，
+ * 于是把下个执行日回拨到 10-30 后再点执行，只按最近记录补出今天这一期，
+ * 10-30 ~ 昨天 的期次永久缺失，用户改了「下个执行日」却看不到任何效果。
+ *
+ * 去重：已生成过的日期不重复生成。被用户删掉的期次默认也是「墓碑」，
+ * 但用户把游标拨到「最近一次执行 + 一个周期」之前时，就是显式要求重做那段历史 ——
+ * 此时「早于上次执行日期」的墓碑不再拦截（仍然有效的记录照旧跳），
+ * 否则「先删旧期次、再回拨游标、然后执行」会一条都生不出来；
+ * 而「刚刚删掉最近一期」的墓碑仍在保护范围内，不会被下一轮补记造回来。
+ */
+export type FundBatchExecuteCursor = {
+  /** 本轮开始生成的日期 */
+  startDate: Date;
+  /**
+   * 逐日去重：该日期是否已经「有记录」而应当跳过。
+   * 有效记录永远跳；墓碑（被删掉的期次）只有在游标被显式回拨、
+   * 且该期次早于「上次执行日期」时才允许重做。
+   */
+  isBlocked: (dateKey: string, date: Date) => boolean;
+  /** 用户是否把游标显式拨回到「上次执行 + 一个周期」之前 */
+  cursorMovedBack: boolean;
+};
+
+export function resolveFundBatchExecuteCursor(params: {
+  nextRunDate?: Date | null;
+  lastRunDate?: Date | null;
+  /** 计划行上已存在的最晚记录日期（含已删除的墓碑） */
+  latestRecordDate?: Date | null;
+  startDate: Date;
+  intervalUnit: IntervalUnit;
+  intervalValue: number;
+  executionDay?: number | null;
+  secondaryExecutionDay?: number | null;
+  /** 已生成过的所有日期（含墓碑） */
+  existingDates: Set<string>;
+  /** 仍然有效的记录日期（不含墓碑） */
+  liveDates: Set<string>;
+}): FundBatchExecuteCursor {
+  const nextRunFrom = (from: Date) =>
+    calcNextScheduledRunDate(
+      from,
+      params.intervalUnit,
+      params.intervalValue,
+      params.executionDay,
+      true,
+      params.secondaryExecutionDay,
+    );
+
+  const derivedNextRunDate = params.lastRunDate ? nextRunFrom(params.lastRunDate) : null;
+  const cursorMovedBack =
+    !!params.nextRunDate && !!derivedNextRunDate && params.nextRunDate.getTime() < derivedNextRunDate.getTime();
+  // 允许重做墓碑的日期界线：只有「回拨游标 + 早于上次执行日期」的期次算显式重做。
+  // 上次执行日期及其之后的墓碑照旧拦着 —— 用户刚刚删掉最近一期时，
+  // 下一轮补记不能把它又造回来。
+  const replayBefore = cursorMovedBack && params.lastRunDate ? params.lastRunDate : null;
+  const isBlocked = (dateKey: string, date: Date) => {
+    if (!params.existingDates.has(dateKey)) return false;
+    if (params.liveDates.has(dateKey)) return true;
+    if (replayBefore && date.getTime() < replayBefore.getTime()) return false;
+    return true;
+  };
+
+  let startDate: Date;
+  if (params.nextRunDate) {
+    startDate = params.nextRunDate;
+  } else if (params.latestRecordDate) {
+    startDate = nextRunFrom(params.latestRecordDate);
+  } else if (params.lastRunDate) {
+    // 记录被全部删除（连墓碑都没有）：计划游标证明历史期次已经执行过，从游标之后继续
+    startDate = nextRunFrom(params.lastRunDate);
+  } else {
+    startDate = calcInitialScheduledRunDate(
+      params.startDate,
+      params.intervalUnit,
+      params.intervalValue,
+      params.executionDay,
+      true,
+      params.secondaryExecutionDay,
+    );
+  }
+
+  return { startDate, isBlocked, cursorMovedBack };
+}
