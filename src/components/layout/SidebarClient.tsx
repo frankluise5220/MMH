@@ -2,7 +2,7 @@
 
 import Link, { useLinkStatus } from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useState, useEffect, useMemo, useRef, useCallback, startTransition } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback, startTransition, type MouseEvent as ReactMouseEvent } from "react";
 import {
   LayoutDashboard,
   Users,
@@ -68,6 +68,7 @@ import { sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts
 import { accountUsageScore } from "@/lib/account-usage-score";
 import { UndoLastOperationButton } from "@/components/UndoLastOperationButton";
 import { getInvestmentAccountView, resolveLoanType } from "@/lib/account-kind-utils";
+import { hasCompletedAccountDetailCache } from "@/lib/client/detail-all-store";
 import { FIXED_ASSET_TYPES } from "@/lib/fixed-asset";
 import { LOAN_TYPES, type LoanTypeValue } from "@/lib/loan-type";
 import { dispatchFirstUseGuideOpen } from "@/lib/client/onboardingGuide";
@@ -1424,6 +1425,31 @@ export function SidebarClient({
     return `/?${q.toString()}`;
   }
 
+  function handleSidebarAccountClick(
+    event: ReactMouseEvent<HTMLAnchorElement>,
+    href: string,
+    item: AccountItem,
+  ) {
+    if (accountFilterOpen) closeAccountFilter();
+    if (
+      event.defaultPrevented
+      || event.button !== 0
+      || event.metaKey
+      || event.ctrlKey
+      || event.shiftKey
+      || event.altKey
+      || !item.id
+      || item.id === selectedAccountId
+      || item.kind === "ewallet"
+    ) return;
+
+    const target = new URL(href, window.location.href);
+    if (target.searchParams.get("view") !== "detail" || !hasCompletedAccountDetailCache(item.id)) return;
+    target.searchParams.set("_detailCache", "1");
+    event.preventDefault();
+    router.push(`${target.pathname}${target.search}${target.hash}`, { scroll: false });
+  }
+
   function sidebarItemHoverTitle(it: AccountItem) {
     return it.hoverTitle ?? [isSidebarSettlementLoan(it) ? "" : it.groupName, it.label, inlineKindLabel(it.kind), it.currency].filter(Boolean).join(" · ");
   }
@@ -1990,7 +2016,7 @@ export function SidebarClient({
                                         onMouseEnter={() => prefetchRoute(soloHref)}
                                         onFocus={() => prefetchRoute(soloHref)}
                                         onTouchStart={() => prefetchRoute(soloHref)}
-                                        onClick={accountFilterOpen ? closeAccountFilter : undefined}
+                                        onClick={(event) => handleSidebarAccountClick(event, soloHref, soloChild)}
                                         className={`${accountLinkCls(soloActive)} ${rowIndentCls} ${rowBorderCls}`}
                                       >
                                         <span className="min-w-0 flex-1 pr-2">
@@ -2022,7 +2048,7 @@ export function SidebarClient({
                                         onMouseEnter={() => prefetchRoute(href)}
                                         onFocus={() => prefetchRoute(href)}
                                         onTouchStart={() => prefetchRoute(href)}
-                                        onClick={accountFilterOpen ? closeAccountFilter : undefined}
+                                        onClick={(event) => handleSidebarAccountClick(event, href, it)}
                                         className={`${accountLinkCls(active)} ${rowIndentCls} ${rowBorderCls}`}
                                       >
                                         <span className="min-w-0 flex-1 pr-2">
@@ -2046,7 +2072,7 @@ export function SidebarClient({
                                               onMouseEnter={() => prefetchRoute(childHref)}
                                               onFocus={() => prefetchRoute(childHref)}
                                               onTouchStart={() => prefetchRoute(childHref)}
-                                              onClick={accountFilterOpen ? closeAccountFilter : undefined}
+                                              onClick={(event) => handleSidebarAccountClick(event, childHref, child)}
                                               className={`${accountLinkCls(isAccountItemActive(child))} ml-6 rounded-l-none border-l border-slate-200 pl-2.5 text-[11px]`}
                                             >
                                               <span className="min-w-0 flex-1 pr-2">

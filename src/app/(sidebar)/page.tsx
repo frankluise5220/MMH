@@ -399,6 +399,7 @@ export default async function Home({
     /** Legacy alias of `loanType` (pre-2026-10-06 terminology). */
     debtLoanType?: string;
     detailAll?: string;
+    _detailCache?: string;
     detailFilterDate?: string;
     detailFilterFlow?: string;
     detailFilterType?: string;
@@ -716,6 +717,11 @@ export default async function Home({
     needsDetailEntries &&
     ((view === "detail" && !!accountId) || (isAllCashView && cashLedgerAccountIds.length > 0)) &&
     !hasDetailFilters;
+  // Sidebar may opt into the browser's completed account snapshot. In that case
+  // the client will render cached rows and revalidate them, so repeating the
+  // full-ledger page query here only delays the route transition.
+  const useClientDetailCache =
+    params?._detailCache === "1" && view === "detail" && !!accountId && usePagedDetailEntries && !detailAll;
   // 明细的默认观测窗口：`设置 → 显示 → 明细默认观测窗口`（年，0 = 不限）。
   // 这不是 URL 筛选，但必须**在服务端就算进查询**：首屏那一页、`共 N 条`、页码
   // 总数都要是范围口径，否则 chip 说「近 3 年」、表头却报全量 4 万多条，进「全部」
@@ -772,7 +778,7 @@ export default async function Home({
   const pagedDetailFetchRows = detailAll
     ? pagedDetailPageSize
     : Math.max(pageSize, DETAIL_PAGED_FIRST_FETCH_ROWS);
-  const pagedDetailData = usePagedDetailEntries
+  const pagedDetailData = usePagedDetailEntries && !useClientDetailCache
     ? await loadEntriesPageForAccount(
         isAllCashView ? cashLedgerAccountIds : accountId,
         // 绑定货基的钱包：「收益」开关没勾就在 SQL 显示层排除货基收益行；
@@ -790,7 +796,9 @@ export default async function Home({
       )
     : null;
 
-  const rawEntries = pagedDetailData
+  const rawEntries = useClientDetailCache
+    ? []
+    : pagedDetailData
     ? pagedDetailData.entries
     : needsDetailEntries
     ? accountId
@@ -4084,6 +4092,8 @@ export default async function Home({
                   initialPageSize={pageSize}
                   initialDateRange={initialDetailDateRange ?? undefined}
                   initialDetailAll={detailAll}
+                  initialEntriesFromClientCache={useClientDetailCache}
+                  initialClientDetailCacheHint={params?._detailCache === "1"}
                   initialAutoFit={detailPaginationPref?.autoFit !== false}
                   normalExportFilename={normalExportFilename}
                   normalExportRows={normalExportRows}

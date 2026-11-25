@@ -216,6 +216,11 @@ export function peekDetailAll<T>(key: string): DetailAllSnapshot<T> | null {
   };
 }
 
+/** A completed account snapshot can let the detail route skip its duplicate first-page query. */
+export function hasCompletedAccountDetailCache(accountId: string): boolean {
+  return peekDetailAll(accountId)?.done === true;
+}
+
 /** 订阅某个 key 的加载进度；任务还没建时先登记，`ensure` 启动后会照样收到。 */
 export function subscribeDetailAll<T>(key: string, listener: Listener<T>) {
   let set = listeners.get(key);

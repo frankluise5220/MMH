@@ -109,6 +109,8 @@ type BasicDetailPanelProps = {
   accountId: string;
   isInvestAccount: boolean;
   entries: DetailEntry[];
+  initialEntriesFromClientCache?: boolean;
+  initialClientDetailCacheHint?: boolean;
   totalCount: number;
   originalCount: number;
   hasDetailFilters: boolean;
@@ -388,6 +390,8 @@ export function BasicDetailPanel({
   accountId,
   isInvestAccount,
   entries,
+  initialEntriesFromClientCache = false,
+  initialClientDetailCacheHint = false,
   totalCount,
   originalCount,
   hasDetailFilters,
@@ -619,6 +623,14 @@ export function BasicDetailPanel({
   const detailPageKeyRef = useRef(detailPageKey);
   detailPageKeyRef.current = detailPageKey;
 
+  useEffect(() => {
+    if (!initialClientDetailCacheHint) return;
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("_detailCache") !== "1") return;
+    url.searchParams.delete("_detailCache");
+    replaceCurrentRouteUrl(`${url.pathname}${url.search}${url.hash}`);
+  }, [initialClientDetailCacheHint]);
+
   /**
    * 「全部」模式：整份明细由模块级仓库（`detail-all-store`）持有，分块进度、完成
    * 结果都留在那里。组件只负责「订阅 + 渲染」：
@@ -822,7 +834,7 @@ export function BasicDetailPanel({
     };
   }, [accountId, deriveFromAllCashCache, detailAllRangeKey, hideMoneyIncome]);
 
-  const reloadDetailPage = useCallback((signal?: AbortSignal, hideIncomeOverride?: boolean) => {
+  const reloadDetailPage = useCallback((signal?: AbortSignal, hideIncomeOverride?: boolean, revalidateCached = false) => {
     if (!clientPaginationEnabled) return;
     const requestKey = `${accountId}|${detailAll ? "all" : String(safePage)}|${pageSize}|${serverDateRangeKey}`;
     if (detailAll) {
@@ -861,7 +873,7 @@ export function BasicDetailPanel({
       }
       locatingDateRef.current = false;
       setIsPageLoading(false);
-      return;
+      if (!revalidateCached) return;
     }
     const params = new URLSearchParams({
       accountId,
@@ -876,7 +888,7 @@ export function BasicDetailPanel({
     if (hasDetailDateRange) params.set("range", serverDateRangeKey);
     // 不带 `no-store`：接口发了 ETag，刷新/重进时浏览器会带 If-None-Match 回来，
     // 没变就 304 用本地副本。
-    setIsPageLoading(true);
+    setIsPageLoading(!cached);
     void (async () => {
       let payload: DetailPagePayload;
       try {
@@ -896,6 +908,17 @@ export function BasicDetailPanel({
       }
       // 期间又翻页 / 改了条件：这份结果已经不是用户要看的那一页。
       if (requestKey !== detailPageKeyRef.current) return;
+      if (cached) {
+        const unchanged =
+          cached.totalCount === payload.totalCount
+          && cached.entries.length === payload.entries.length
+          && cached.entries.every((entry, index) =>
+            entry.id === payload.entries[index]?.id
+            && JSON.stringify(entry) === JSON.stringify(payload.entries[index]),
+          );
+        if (unchanged) patchDetailAllRows(detailAllKey, payload.entries);
+        else dropDetailAllCache([detailAllKey]);
+      }
       setLocalEntries(payload.entries);
       if (payload.totalCount != null) {
         setLocalTotalCount(payload.totalCount);
@@ -1292,7 +1315,7 @@ export function BasicDetailPanel({
     //
     // 默认观测窗口也由 RSC 带上了（`initialDateRange`）：首屏那页、`共 N 条`、页码
     // 总数都是范围口径，客户端不必再按同一个范围重复取一遍。
-    if (isFirstRun && !detailAll && (initialDateRange || !hasDetailDateRange)) return;
+    if (isFirstRun && !initialEntriesFromClientCache && !detailAll && (initialDateRange || !hasDetailDateRange)) return;
     // 首屏那份行还在、还是同一个账户同一个观测窗口、而且第 1 页能整页切片出来：
     // 量出来的页大小（比如 22）只是「一屏放几行」，RSC 给的行数够用，直接在本地切。
     // 只有真的要换窗口（翻页到第 2 页、拉宽观测范围、行已被别的取数替换）才发请求。
@@ -1311,10 +1334,10 @@ export function BasicDetailPanel({
     }
 
     const controller = new AbortController();
-    reloadDetailPageRef.current(controller.signal);
+    reloadDetailPageRef.current(controller.signal, undefined, initialEntriesFromClientCache);
 
     return () => controller.abort();
-  }, [accountId, clientPaginationEnabled, detailAll, hasDetailDateRange, initialDateRange, localEntries, localTotalCount, pageSize, safePage, serverDateRangeKey]);
+  }, [accountId, clientPaginationEnabled, detailAll, hasDetailDateRange, initialDateRange, initialEntriesFromClientCache, localEntries, localTotalCount, pageSize, safePage, serverDateRangeKey]);
 
   // 时间轴两端（双滑块的可拖范围）永远取自**全量**数据：不受时间范围本身、也不受
   // 日期列筛选、URL 筛选影响，否则拖一次区间滑轨就缩到刚选的范围，再也拖不回更早
