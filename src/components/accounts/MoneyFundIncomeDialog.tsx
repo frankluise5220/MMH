@@ -17,7 +17,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Info, Trash2, Wallet, X } from "lucide-react";
+import { Info, Loader2, Trash2, Wallet, X } from "lucide-react";
 import { ModalLayer } from "@/components/ModalLayer";
 import { accountOptionFromParts } from "@/lib/account-display";
 import { readAccountDisplaySettings } from "@/lib/client/account-display-settings";
@@ -31,6 +31,34 @@ const FIELD_INPUT_CLS =
   "h-[var(--field-h-compact)] w-full rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-800 outline-none transition-colors hover:border-slate-400 focus:border-blue-400 focus:ring-2 focus:ring-blue-100";
 const TH_CLS = "border-b border-slate-200 px-2 py-1.5 text-left text-[11px] font-semibold text-slate-600";
 const TD_CLS = "border-b border-slate-100 px-2 py-1 align-middle text-xs";
+/**
+ * 手工重算一次最多往后接着跑几轮。
+ *
+ * 服务端单次重算最多结 366 天（`MAX_DAYS_PER_RUN`），超出部分只能下次再跑；用户既然选了
+ * 整段区间，客户端就按这个粒度一路接着跑完（2026-11-26 用户报「选了 5 年只重算 80 天」）。
+ * 轮数对用户不可见——窗口里始终是一次「正在重算」，20 轮 ≈ 20 年足够覆盖任何手工区间，
+ * 真正的死循环由「是否还在往前推进」兜底。
+ */
+const RECALC_MAX_ROUNDS = 20;
+
+/** 单次跨度超过一年就先提醒「会比较慢」（与服务端单轮上限同量级，只作提示阈值）。 */
+const RECALC_LARGE_RANGE_DAYS = 366;
+
+/** YYYY-MM-DD + 1 天（只按日历日算，不碰时区）。 */
+function nextDayYmd(ymd: string): string {
+  const date = new Date(`${ymd}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + 1);
+  return date.toISOString().slice(0, 10);
+}
+
+/** 区间天数（含两端，只按日历日算）。起点晚于终点或日期非法时返回 0。 */
+function daySpanInclusive(fromYmd: string, toYmd: string): number {
+  const from = Date.parse(`${fromYmd}T00:00:00.000Z`);
+  const to = Date.parse(`${toYmd}T00:00:00.000Z`);
+  if (!Number.isFinite(from) || !Number.isFinite(to) || to < from) return 0;
+  return Math.round((to - from) / 86_400_000) + 1;
+}
+
 /** 表格行内的编辑框：比 .form-input 矮一档，行高才跟纯文本行对得上。 */
 const CELL_INPUT_CLS =
   "h-6 w-full min-w-0 rounded border border-slate-300 bg-white px-1 text-[11px] tabular-nums text-slate-700 outline-none transition-colors hover:border-slate-400 focus:border-blue-400 focus:ring-2 focus:ring-blue-100";
@@ -214,6 +242,16 @@ export function MoneyFundIncomeDialog({ open, account, onClose, onChanged }: Pro
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  /**
+   * 分批重算的进度（窗口冻结期间显示）。`total` 是用户选的整天数，`covered` 是已经
+   * 结到哪天折成的天数——用它算进度条，比「已生成多少天收益」准（余额为 0 的天不落行）。
+   */
+  const [recalcTick, setRecalcTick] = useState<{
+    total: number;
+    covered: number;
+    days: number;
+    amount: number;
+  } | null>(null);
   /** 每行未提交的编辑值；没有条目就表示这一行还是服务端的原值。 */
   const [drafts, setDrafts] = useState<Record<string, SegmentDraft>>({});
   /** 表格底部空行的输入值。 */
@@ -566,34 +604,94 @@ export function MoneyFundIncomeDialog({ open, account, onClose, onChanged }: Pro
       confirmLabel: t("settings.accounts.linkedFund.recalc"),
     });
     if (!confirmed) return;
+    const totalDays = daySpanInclusive(fromDate, toDate);
     setBusy(true);
     setMessage("");
     setError("");
+    setRecalcTick({ total: totalDays, covered: 0, days: 0, amount: 0 });
     try {
-      const response = await fetch("/api/v1/fund/money-income/accrue", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountId: account.id, fromDate, toDate }),
-      });
-      const data = await response.json().catch(() => null) as {
-        ok?: boolean;
-        error?: string;
-        data?: { wallet?: { days?: number; totalIncome?: number; removed?: number } };
-      } | null;
-      if (!response.ok || data?.ok !== true) {
-        setError(data?.error?.trim() || t("settings.accounts.linkedFund.recalcFailed"));
-        return;
+      let cursor = fromDate;
+      let days = 0;
+      let amount = 0;
+      let coveredFrom = "";
+      let coveredTo = "";
+      let skippedTiny = 0;
+      let skippedNoBalance = 0;
+      let stalled = false;
+      for (let round = 0; round < RECALC_MAX_ROUNDS && cursor <= toDate; round += 1) {
+        const response = await fetch("/api/v1/fund/money-income/accrue", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ accountId: account.id, fromDate: cursor, toDate }),
+        });
+        const data = await response.json().catch(() => null) as {
+          ok?: boolean;
+          error?: string;
+          data?: {
+            wallet?: {
+              days?: number;
+              totalIncome?: number;
+              removed?: number;
+              fromDate?: string;
+              toDate?: string;
+              truncated?: boolean;
+              skippedTinyDays?: number;
+              skippedNoBalanceDays?: number;
+            };
+          };
+        } | null;
+        if (!response.ok || data?.ok !== true) {
+          setError(data?.error?.trim() || t("settings.accounts.linkedFund.recalcFailed"));
+          return;
+        }
+        const wallet = data.data?.wallet;
+        const batchFrom = wallet?.fromDate || cursor;
+        const batchTo = wallet?.toDate || cursor;
+        days += wallet?.days ?? 0;
+        amount = Math.round((amount + (wallet?.totalIncome ?? 0)) * 100) / 100;
+        skippedTiny += wallet?.skippedTinyDays ?? 0;
+        skippedNoBalance += wallet?.skippedNoBalanceDays ?? 0;
+        if (!coveredFrom) coveredFrom = batchFrom;
+        coveredTo = batchTo;
+        setRecalcTick({
+          total: totalDays,
+          covered: Math.min(totalDays, daySpanInclusive(fromDate, batchTo)),
+          days,
+          amount,
+        });
+        if (!wallet?.truncated) break;
+        // 服务端会停在万份收益取不到的缺口前一天：此时批次不再前进，别再重复请求。
+        const nextCursor = nextDayYmd(batchTo);
+        if (nextCursor <= cursor) {
+          stalled = true;
+          break;
+        }
+        cursor = nextCursor;
       }
-      const wallet = data.data?.wallet;
-      setMessage(tf("settings.accounts.linkedFund.recalcDone", {
-        days: wallet?.days ?? 0,
-        amount: (wallet?.totalIncome ?? 0).toFixed(2),
-      }));
+      const vars = {
+        from: coveredFrom || fromDate,
+        to: coveredTo || fromDate,
+        days,
+        amount: amount.toFixed(2),
+      };
+      const skippedNotes = [
+        skippedTiny > 0 ? tf("settings.accounts.linkedFund.recalcSkippedTiny", { days: skippedTiny }) : "",
+        skippedNoBalance > 0 ? tf("settings.accounts.linkedFund.recalcSkippedNoBalance", { days: skippedNoBalance }) : "",
+      ].filter(Boolean);
+      setMessage(
+        [
+          stalled
+            ? tf("settings.accounts.linkedFund.recalcPartial", vars)
+            : tf("settings.accounts.linkedFund.recalcDone", vars),
+          ...skippedNotes,
+        ].join(" "),
+      );
       onChanged("account:linked-fund-recalc");
     } catch {
       setError(t("settings.accounts.linkedFund.recalcFailed"));
     } finally {
       setBusy(false);
+      setRecalcTick(null);
     }
   }
 
@@ -602,10 +700,18 @@ export function MoneyFundIncomeDialog({ open, account, onClose, onChanged }: Pro
   // 用户自己的日历（不缓存：跨零点还开着的页面要跟着走）。
   const todayYmd = todayDateLocalYmd();
 
+  // 选了很长的区间就先说清楚会慢（2026-11-26 用户要求「数据量较大应该做提示」）。
+  const recalcRangeDays = daySpanInclusive(recalcFrom || boundStartDate || todayYmd, recalcTo || todayYmd);
+  const recalcPercent =
+    recalcTick && recalcTick.total > 0
+      ? Math.min(100, Math.round((recalcTick.covered / recalcTick.total) * 100))
+      : 0;
+
   return (
     <ModalLayer
       className="fixed inset-0 flex items-center justify-center bg-black/30 p-4 backdrop-blur-[1px]"
-      onMouseDown={onClose}
+      // 重算期间锁窗口：点遮罩不能关（请求还在跑，关掉用户就看不到结果了）。
+      onMouseDown={busy ? undefined : onClose}
     >
       <div
         className="w-[640px] max-w-[calc(100vw-2rem)] rounded-xl border border-slate-200 bg-white shadow-xl"
@@ -626,7 +732,9 @@ export function MoneyFundIncomeDialog({ open, account, onClose, onChanged }: Pro
           <button
             type="button"
             onClick={onClose}
-            className="rounded p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+            disabled={busy}
+            title={busy ? t("settings.accounts.linkedFund.recalcFrozenHint") : undefined}
+            className="rounded p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-transparent"
             aria-label={t("common.close")}
           >
             <X className="h-4 w-4" />
@@ -634,6 +742,15 @@ export function MoneyFundIncomeDialog({ open, account, onClose, onChanged }: Pro
         </div>
 
         <div className="grid gap-3 px-4 py-3">
+          {/*
+            重算期间整块冻结（2026-11-26 用户要求「冻结窗口」）：请求还在跑的时候改绑定、
+            改区间都不会被后续请求采用，只会让用户以为改生效了，所以干脆锁住。
+          */}
+          <div
+            className={`grid gap-3${busy ? " pointer-events-none select-none opacity-60" : ""}`}
+            inert={busy || undefined}
+            aria-busy={busy || undefined}
+          >
           {/* 账户身份：入口在钱包视图表头，所以固定显示这只钱包，不再给下拉框。 */}
           <div
             className="flex items-center gap-1.5 rounded-md border border-slate-200 bg-slate-50/70 px-2 py-1.5"
@@ -882,8 +999,42 @@ export function MoneyFundIncomeDialog({ open, account, onClose, onChanged }: Pro
                 </button>
               </div>
               <div className="text-[11px] text-slate-400">{t("settings.accounts.linkedFund.recalcHint")}</div>
+              {recalcRangeDays > RECALC_LARGE_RANGE_DAYS ? (
+                <div className="text-[11px] text-amber-600">
+                  {tf("settings.accounts.linkedFund.recalcLargeRangeHint", {
+                    days: recalcRangeDays,
+                  })}
+                </div>
+              ) : null}
             </div>
           )}
+
+          </div>
+
+          {busy ? (
+            <div className="grid gap-1 rounded-md border border-blue-100 bg-blue-50/60 px-2 py-1.5" role="status" aria-live="polite">
+              <div className="flex items-center gap-1.5 text-[11px] font-medium text-blue-700">
+                <Loader2 className="h-3 w-3 shrink-0 animate-spin" aria-hidden="true" />
+                <span className="min-w-0">
+                  {recalcTick
+                    ? tf("settings.accounts.linkedFund.recalcProgress", {
+                      covered: recalcTick.covered,
+                      total: recalcTick.total,
+                      days: recalcTick.days,
+                      amount: recalcTick.amount.toFixed(2),
+                    })
+                    : t("settings.accounts.linkedFund.recalcBusy")}
+                </span>
+              </div>
+              <div className="h-1 w-full overflow-hidden rounded-full bg-blue-100">
+                <div
+                  className="h-full rounded-full bg-blue-500 transition-all duration-300"
+                  style={{ width: `${recalcPercent}%` }}
+                />
+              </div>
+              <div className="text-[11px] text-slate-500">{t("settings.accounts.linkedFund.recalcFrozenHint")}</div>
+            </div>
+          ) : null}
 
           {(message || error) && (
             <div className={`text-[11px] ${error ? "text-rose-600" : "text-emerald-600"}`}>{error || message}</div>

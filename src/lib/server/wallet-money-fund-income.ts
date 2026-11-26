@@ -62,6 +62,10 @@ export type WalletMoneyFundAccrualResult = {
   pendingFrom?: string | null;
   /** 「从某天重算」时删掉的旧收益行数。 */
   removed?: number;
+  /** 因当天收益不足 0.01 元被跳过的天数（余额很小，结不出分）。 */
+  skippedTinyDays?: number;
+  /** 因前一日日终余额不为正被跳过的天数。 */
+  skippedNoBalanceDays?: number;
   reason?: string;
 };
 
@@ -75,6 +79,8 @@ const EMPTY: WalletMoneyFundAccrualResult = {
   truncated: false,
   pendingFrom: null,
   removed: 0,
+  skippedTinyDays: 0,
+  skippedNoBalanceDays: 0,
 };
 
 type WalletTarget = {
@@ -375,6 +381,9 @@ async function accrueOneWallet(params: {
 
   let created = 0;
   let totalIncome = 0;
+  /** 被跳过的天数分两类记下来，回答「我选了 5 年为什么只有 80 天」。 */
+  let skippedTinyDays = 0;
+  let skippedNoBalanceDays = 0;
   /**
    * 本轮已经排进 rows 的收益累计（按日升序处理，轮到某天时它就等于「该日之前」的收益之和）。
    *
@@ -403,10 +412,17 @@ async function accrueOneWallet(params: {
       if (existing.has(day)) continue;
       // 前一日日终余额 + 本轮此前各天已排的收益（还没落库，折叠链看不到，见 carriedIncome）。
       const base = round2(balanceOf(shiftYmd(day, -1)) + carriedIncome);
-      if (!(base > 0)) continue;
+      if (!(base > 0)) {
+        skippedNoBalanceDays += 1;
+        continue;
+      }
       const per10k = plan.yields.get(day)!;
       const income = moneyFundDailyIncome(base, per10k);
-      if (income === 0) continue;
+      if (income === 0) {
+        // 余额只有几十块时一天收益不到 1 分，四舍五入是 0：不生成流水，但要能解释。
+        skippedTinyDays += 1;
+        continue;
+      }
       existing.add(day);
       carriedIncome = round2(carriedIncome + income);
       rows.push({
@@ -464,6 +480,8 @@ async function accrueOneWallet(params: {
     toDate: maxToKey,
     truncated: truncated || maxToKey < accrualEndKey,
     pendingFrom,
+    skippedTinyDays,
+    skippedNoBalanceDays,
     reason: created === 0 ? "nothing to accrue" : undefined,
   });
 }
@@ -545,6 +563,8 @@ export async function accrueWalletMoneyFundIncome(params: {
     let truncated = false;
     let pendingFrom: string | null = null;
     let removed = 0;
+    let skippedTinyDays = 0;
+    let skippedNoBalanceDays = 0;
 
     for (const wallet of wallets) {
       try {
@@ -560,6 +580,8 @@ export async function accrueWalletMoneyFundIncome(params: {
         removed += outcome.removed ?? 0;
         days += outcome.days ?? 0;
         totalIncome = round2(totalIncome + (outcome.totalIncome ?? 0));
+        skippedTinyDays += outcome.skippedTinyDays ?? 0;
+        skippedNoBalanceDays += outcome.skippedNoBalanceDays ?? 0;
         if (outcome.fromDate && (!fromDate || outcome.fromDate < fromDate)) fromDate = outcome.fromDate;
         if (outcome.toDate && (!toDate || outcome.toDate > toDate)) toDate = outcome.toDate;
         if (outcome.truncated) truncated = true;
@@ -582,6 +604,8 @@ export async function accrueWalletMoneyFundIncome(params: {
       truncated,
       pendingFrom,
       removed,
+      skippedTinyDays,
+      skippedNoBalanceDays,
       reason: days === 0 ? (pendingFrom ? "yield data unavailable" : "nothing to accrue") : undefined,
     };
   }, () => ({ ...EMPTY, reason: "busy" }));
