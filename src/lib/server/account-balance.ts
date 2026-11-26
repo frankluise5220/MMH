@@ -193,6 +193,28 @@ async function decorateBalanceRowsWithInvestmentDisplay(
   );
 }
 
+async function foldLoadedAccountBalances(
+  accounts: AccountBalanceLike[],
+  rows: BalanceEntryRow[],
+  hidFilter: { householdId?: string } | undefined,
+  todayKey: string,
+) {
+  const displayRows = await decorateBalanceRowsWithInvestmentDisplay(prisma, hidFilter, rows);
+  const byAccount = new Map(accounts.map((account) => [account.id, [] as BalanceEntryRow[]]));
+  for (const row of displayRows) {
+    if (row.accountId) byAccount.get(row.accountId)?.push(row);
+    if (row.toAccountId && row.toAccountId !== row.accountId && row.source !== FX_CONVERSION_SOURCE) {
+      byAccount.get(row.toAccountId)?.push(row);
+    }
+  }
+  return accounts.map((account) => {
+    const ordered = (byAccount.get(account.id) ?? [])
+      .filter((row) => localDateKey(getDetailEntryDisplayDate(row, account.id)) <= todayKey)
+      .sort((a, b) => compareDetailEntriesAsc(a, b, account.id));
+    return [account.id, ordered.reduce((balance, row) => foldBalanceEntry(balance, row, account), 0)] as const;
+  });
+}
+
 function entryAffectsBalance(
   entry: BalanceEntryRow,
   accountId: string,
@@ -215,7 +237,6 @@ export async function computeAccountDisplayBalances(
   if (accountIds.length === 0) return result;
   // 「今天」按账簿设置的业务时区算，容器 TZ 只是兜底。
   const todayKey = todayDateBusinessYmd(await resolveHouseholdTimeZone(hidFilter?.householdId));
-  const isOnOrBeforeToday = (date: Date) => localDateKey(date) <= todayKey;
   const depositAccountIds = accounts
     .filter((account) => account.kind === AccountKind.deposit || account.investProductType === "deposit")
     .map((account) => account.id);
@@ -272,63 +293,36 @@ export async function computeAccountDisplayBalances(
   const nonDepositAccounts = accounts.filter(
     (account) => account.kind !== AccountKind.deposit && account.investProductType !== "deposit",
   );
-  const nonDepositAccountIds = nonDepositAccounts.map((account) => account.id);
+  const foldableAccounts = nonDepositAccounts.filter((account) => account.kind !== AccountKind.bank_credit);
+  for (const account of nonDepositAccounts) {
+    if (account.kind === AccountKind.bank_credit) {
+      // Credit-card balances come from the cycle cache, not transaction folding.
+      result.set(account.id, 0);
+    }
+  }
 
-  if (nonDepositAccountIds.length > 0) {
-    const txRows = await prisma.txRecord.findMany({
-      where: {
-        ...txWhere,
-        ...txRecordAccountScopeWhere(nonDepositAccountIds),
-      },
+  if (foldableAccounts.length > 0) {
+    // Keep the single-query path for small ledgers. The extra row detects
+    // overflow; it is a memory threshold, never a limit on the balance input.
+    const readBoundedRows = (ids: string[]) => prisma.txRecord.findMany({
+      where: { ...txWhere, ...txRecordAccountScopeWhere(ids) },
       select: BALANCE_ENTRY_SELECT,
+      take: BALANCE_WINDOW_MAX_ROWS + 1,
     });
-
-    // 生效日回填：赎回资金按到账日影响现金账户余额（与明细排序同一口径）。
-    const displayRows = await decorateBalanceRowsWithInvestmentDisplay(prisma, hidFilter, txRows);
-    const displayRowById = new Map(displayRows.map((row) => [row.id, row]));
-
-    const txByAccountId = new Map<string, typeof txRows>();
-    for (const accountId of nonDepositAccountIds) {
-      txByAccountId.set(accountId, []);
-    }
-    for (const entry of txRows) {
-      if (entry.accountId && txByAccountId.has(entry.accountId)) {
-        txByAccountId.get(entry.accountId)?.push(entry);
+    let rows = await readBoundedRows(foldableAccounts.map((account) => account.id));
+    if (rows.length <= BALANCE_WINDOW_MAX_ROWS) {
+      for (const [id, balance] of await foldLoadedAccountBalances(foldableAccounts, rows, hidFilter, todayKey)) {
+        result.set(id, balance);
       }
-      if (entry.source !== FX_CONVERSION_SOURCE && entry.toAccountId && txByAccountId.has(entry.toAccountId)) {
-        txByAccountId.get(entry.toAccountId)?.push(entry);
+    } else {
+      rows = [];
+      for (const account of foldableAccounts) {
+        const accountRows = await readBoundedRows([account.id]);
+        const balance = accountRows.length <= BALANCE_WINDOW_MAX_ROWS
+          ? (await foldLoadedAccountBalances([account], accountRows, hidFilter, todayKey))[0][1]
+          : await foldAccountBalanceBatched(account, hidFilter, { todayKey });
+        result.set(account.id, balance);
       }
-    }
-
-    for (const account of nonDepositAccounts) {
-      if (account.kind === AccountKind.bank_credit) {
-        // Credit-card balances always come from the CreditCardCycle cache
-        // (billing.ts). Fold to 0 here even when billingDay is unset, so a
-        // card without a billing day is never treated as a plain account
-        // whose balance accumulates transaction flows.
-        result.set(account.id, 0);
-        continue;
-      }
-
-      const rows = txByAccountId.get(account.id) ?? [];
-      const orderedRows = rows
-        .map((entry) => displayRowById.get(entry.id) ?? entry)
-        .filter((entry) => isOnOrBeforeToday(getDetailEntryDisplayDate(entry, account.id)))
-        .sort((a, b) => compareDetailEntriesAsc(a, b, account.id));
-      let runningBalance = 0;
-      for (const entry of orderedRows) {
-        if (isLoanOrSettlementAccountKind(account.kind)) {
-          if (isBalanceAnchorEntry(entry)) {
-            runningBalance = applyBalanceReconcileEntry(runningBalance, entry, account.id);
-            continue;
-          }
-          if (entry.type !== TransactionType.transfer) continue;
-          runningBalance += liabilityPrincipalForAccountSide(entry, account.id);
-          continue;
-        }
-        runningBalance = applyBalanceAnchorEntry(runningBalance, entry, account.id);
-      }
-      result.set(account.id, runningBalance);
     }
   }
 
@@ -729,13 +723,14 @@ async function foldAccountBalanceRange(
     client?: BalanceDbClient;
     fromKeyExclusive?: string;
     toKeyInclusive?: string;
+    todayKey?: string;
     startingBalance?: number;
     excludeEntryIds?: Iterable<string>;
     maxWindows?: number;
   },
 ): Promise<BalanceFoldRangeResult> {
   // 「今天」按账簿设置的业务时区算，容器 TZ 只是兜底。
-  const todayKey = todayDateBusinessYmd(await resolveHouseholdTimeZone(hidFilter?.householdId));
+  const todayKey = options?.todayKey ?? todayDateBusinessYmd(await resolveHouseholdTimeZone(hidFilter?.householdId));
   const targetKey = options?.toKeyInclusive && options.toKeyInclusive < todayKey
     ? options.toKeyInclusive
     : todayKey;
@@ -840,6 +835,7 @@ export async function foldAccountBalanceBatched(
   options?: {
     client?: BalanceDbClient;
     fromKeyExclusive?: string;
+    todayKey?: string;
     startingBalance?: number;
     excludeEntryIds?: Iterable<string>;
   },

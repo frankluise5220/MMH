@@ -12,6 +12,13 @@ function matchesValue(value: unknown, condition: unknown, links?: LinkRow[]): bo
   if ("in" in c) return (c.in as unknown[]).includes(value);
   if ("notIn" in c) return !(c.notIn as unknown[]).includes(value);
   if ("gt" in c || "gte" in c || "lte" in c || "lt" in c) {
+    if (typeof value === "string") {
+      if ("gt" in c && !(value > (c.gt as string))) return false;
+      if ("gte" in c && !(value >= (c.gte as string))) return false;
+      if ("lte" in c && !(value <= (c.lte as string))) return false;
+      if ("lt" in c && !(value < (c.lt as string))) return false;
+      return true;
+    }
     if (!(value instanceof Date)) return false;
     const t = value.getTime();
     if ("gt" in c && !(t > (c.gt as Date).getTime())) return false;
@@ -169,7 +176,7 @@ const redeemDb = {
 
 async function main() {
   process.env.DATABASE_URL ??= "postgresql://mmh:mmh@127.0.0.1:5432/mmh_test";
-  const { foldOversizedBalanceWindow, foldAccountBalanceBatched } = await import("../src/lib/server/account-balance");
+  const { foldOversizedBalanceWindow, foldAccountBalanceBatched, computeAccountDisplayBalances } = await import("../src/lib/server/account-balance");
 
   const oversized = await foldOversizedBalanceWindow(
     oversizedDb as never,
@@ -187,9 +194,47 @@ async function main() {
   const crossWindow = await foldAccountBalanceBatched(account as never, hid, {
     client: redeemDb as never,
     fromKeyExclusive: "2026-08-24",
+    todayKey: "2026-11-26",
     startingBalance: 7455.27,
   });
   assert.equal(Number(crossWindow.toFixed(2)), 21932.1);
+
+  const { prisma } = await import("../src/lib/db/prisma");
+  const originalFindMany = prisma.txRecord.findMany;
+  const originalCount = prisma.txRecord.count;
+  const originalAggregate = prisma.txRecord.aggregate;
+  const originalPreferences = prisma.householdPreference.findUnique;
+  let dataset: Row[] = [];
+  let reads = 0;
+  const takes: number[] = [];
+  try {
+    prisma.householdPreference.findUnique = (async () => null) as never;
+    prisma.txRecord.findMany = (async ({ where, skip = 0, take }: { where?: unknown; skip?: number; take?: number }) => {
+      reads += 1;
+      if (take != null) takes.push(take);
+      const found = dataset.filter((row) => matchesWhere(row, where));
+      return found.slice(skip, skip + (take ?? found.length));
+    }) as never;
+    prisma.txRecord.count = (async ({ where }: { where?: unknown }) => dataset.filter(row => matchesWhere(row, where)).length) as never;
+    prisma.txRecord.aggregate = (async () => ({ _min: { date: new Date("2026-11-01T00:00:00Z"), postedAt: null, fundArrivalDate: null } })) as never;
+    const makeRow = (index: number) => ({
+      ...ordinaryRow, id: `row-${String(index).padStart(6, "0")}`, householdId: hid.householdId,
+      date: new Date("2026-11-01T00:00:00Z"), amount: 1, reconciledAt: null, reconciledBalance: null,
+    });
+    dataset = Array.from({ length: 12 }, (_, index) => makeRow(index));
+    const smallBalances = await computeAccountDisplayBalances([account as never], hid);
+    assert.equal(smallBalances.get(account.id), 12);
+    assert.equal(reads, 1, "Small ledgers must retain the single-query path");
+    dataset = Array.from({ length: 20500 }, (_, index) => makeRow(index));
+    const largeBalances = await computeAccountDisplayBalances([account as never], hid);
+    assert.equal(largeBalances.get(account.id), 20500, "A memory threshold must not truncate the ledger");
+    assert.ok(takes.every(take => take <= 20001), "Every scalar read has a bounded allocation");
+  } finally {
+    prisma.txRecord.findMany = originalFindMany;
+    prisma.txRecord.count = originalCount;
+    prisma.txRecord.aggregate = originalAggregate;
+    prisma.householdPreference.findUnique = originalPreferences;
+  }
 
   console.log("account balance window regressions passed");
 }
