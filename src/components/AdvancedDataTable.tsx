@@ -2105,11 +2105,11 @@ export function AdvancedDataTable<T>({
   const selectedSelectableKeys = useMemo(() => {
     if (!selectable || effectiveSelectedKeys.size === 0) return new Set<string>();
     const next = new Set<string>();
-    for (const key of selectableRowKeys) {
-      if (effectiveSelectedKeys.has(key)) next.add(key);
+    for (const key of effectiveSelectedKeys) {
+      if (selectableRowKeySet.has(key)) next.add(key);
     }
     return next;
-  }, [effectiveSelectedKeys, selectable, selectableRowKeys]);
+  }, [effectiveSelectedKeys, selectable, selectableRowKeySet]);
   const virtualPaddingTop = shouldVirtualizeRows ? virtualRows[0]?.start ?? 0 : 0;
   const virtualPaddingBottom = shouldVirtualizeRows
     ? Math.max(0, rowVirtualizer.getTotalSize() - (virtualRows[virtualRows.length - 1]?.end ?? 0))
@@ -3431,12 +3431,12 @@ export function AdvancedDataTable<T>({
     () => {
       if (!selectAllPreferred) return selectedSelectableCount;
       let count = 0;
-      for (const key of preferredSelectableKeySet) {
-        if (effectiveSelectedKeys.has(key)) count += 1;
+      for (const key of selectedSelectableKeys) {
+        if (preferredSelectableKeySet.has(key)) count += 1;
       }
       return count;
     },
-    [effectiveSelectedKeys, preferredSelectableKeySet, selectAllPreferred, selectedSelectableCount],
+    [preferredSelectableKeySet, selectAllPreferred, selectedSelectableCount, selectedSelectableKeys],
   );
   const allSelected = preferredSelectableKeys.length > 0 && preferredSelectedCount === preferredSelectableKeys.length;
   const partiallySelected = !allSelected && (preferredSelectedCount > 0 || (preferredSelectableKeys.length > 0 && effectiveSelectedKeys.size > preferredSelectedCount));

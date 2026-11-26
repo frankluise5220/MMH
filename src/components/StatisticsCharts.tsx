@@ -10,6 +10,7 @@ import { formatMoney } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { useI18n } from "@/lib/i18n";
 import AssetFlowStatisticsTable, { type AssetFlowPoint } from "@/components/AssetFlowStatisticsTable";
+import { useIsMobileDevice } from "@/components/DeviceKindProvider";
 
 const COLORS = {
   investPnL: "#8b5cf6",
@@ -155,6 +156,7 @@ export default function StatisticsCharts({
   isRedUp,
   assetFlowPoints,
 }: Props) {
+  const isMobileDevice = useIsMobileDevice();
   const { t } = useI18n();
   const compactTick = (v: number) => (v >= 10000 ? `${(v / 10000).toFixed(1)}${t("common.compactUnit")}` : String(v));
   const pnlCls = (n: number) => pnlClassFromRedUp(n, isRedUp);
@@ -171,6 +173,7 @@ export default function StatisticsCharts({
   const totalExpense = monthData.reduce((s, m) => s + m.expense, 0);
   const totalInvestPnL = monthData.reduce((s, m) => s + m.investPnL, 0);
   const totalNet = totalIncome - totalExpense + totalInvestPnL;
+  const totalPnlListProfit = pnlList.reduce((sum, item) => sum + item.profit, 0);
 
   return (
     <div className="space-y-6">
@@ -406,7 +409,7 @@ export default function StatisticsCharts({
         ) : (
           <>
           {/* 桌面：表格（6 列） */}
-          <div className="hidden overflow-x-auto max-h-[360px] overflow-y-auto desktop:block">
+          {!isMobileDevice && <div className="overflow-x-auto max-h-[360px] overflow-y-auto">
             <table className="w-full table-fixed border-separate border-spacing-0">
               <thead className="sticky top-0 bg-white z-10">
                 <tr>
@@ -443,16 +446,16 @@ export default function StatisticsCharts({
               <tfoot className="sticky bottom-0 bg-slate-50">
                 <tr>
                   <td className="px-4 py-2 border-t border-slate-200 text-xs font-semibold text-slate-700" colSpan={4}>{t("common.total")}</td>
-                  <td className={`px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums font-semibold ${pnlCls(pnlList.reduce((s, e) => s + e.profit, 0))}`}>
-                    {(() => { const t = pnlList.reduce((s, e) => s + e.profit, 0); return (t >= 0 ? "+" : "") + formatMoney(t); })()}
+                  <td className={`px-3 py-2 border-t border-slate-200 text-right text-xs tabular-nums font-semibold ${pnlCls(totalPnlListProfit)}`}>
+                    {(totalPnlListProfit >= 0 ? "+" : "") + formatMoney(totalPnlListProfit)}
                   </td>
                   <td className="px-3 py-2 border-t border-slate-200"></td>
                 </tr>
               </tfoot>
             </table>
-          </div>
+          </div>}
           {/* 移动端：卡片（每条两行：日期+类型+金额 / 基金+盈亏+收益率） */}
-          <div className="divide-y divide-slate-100 desktop:hidden">
+          {isMobileDevice && <div className="divide-y divide-slate-100">
             {pnlList.map((e) => (
               <div key={e.id} className="px-3 py-2.5">
                 <div className="flex items-center justify-between gap-2">
@@ -479,11 +482,11 @@ export default function StatisticsCharts({
             ))}
             <div className="flex items-center justify-between bg-slate-50 px-3 py-2.5">
               <span className="text-xs font-semibold text-slate-700">{t("common.total")}</span>
-              <span className={`text-sm tabular-nums font-semibold ${pnlCls(pnlList.reduce((s, e) => s + e.profit, 0))}`}>
-                {(() => { const t = pnlList.reduce((s, e) => s + e.profit, 0); return (t >= 0 ? "+" : "") + formatMoney(t); })()}
+              <span className={`text-sm tabular-nums font-semibold ${pnlCls(totalPnlListProfit)}`}>
+                {(totalPnlListProfit >= 0 ? "+" : "") + formatMoney(totalPnlListProfit)}
               </span>
             </div>
-          </div>
+          </div>}
           </>
         )}
       </div>

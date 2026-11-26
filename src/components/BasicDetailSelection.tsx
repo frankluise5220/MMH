@@ -117,20 +117,25 @@ export function useBasicDetailSelection() {
   return ctx;
 }
 
-export function usePruneBasicDetailSelection(validIds: string[]) {
+export function usePruneBasicDetailSelection(
+  validIds: string[] | ReadonlyMap<string, unknown>,
+) {
   const { selectedIds, setSelection } = useBasicDetailSelection();
+  const validIdLookup = useMemo(
+    () => Array.isArray(validIds) ? new Set(validIds) : validIds,
+    [validIds],
+  );
 
   useEffect(() => {
     if (selectedIds.size === 0) return;
-    const validIdSet = new Set(validIds);
     let changed = false;
     const next = new Set<string>();
     for (const id of selectedIds) {
-      if (validIdSet.has(id)) next.add(id);
+      if (validIdLookup.has(id)) next.add(id);
       else changed = true;
     }
     if (changed) setSelection(next);
-  }, [selectedIds, setSelection, validIds]);
+  }, [selectedIds, setSelection, validIdLookup]);
 }
 
 export function BasicDetailSelectionProvider({

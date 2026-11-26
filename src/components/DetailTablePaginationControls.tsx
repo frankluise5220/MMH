@@ -160,14 +160,14 @@ export function DetailTablePaginationControls({
         aria-label={t("pagination.perPage")}
         className="h-6 rounded border border-slate-200 bg-white px-1 text-slate-700 hover:bg-slate-50"
       >
-        <option value="auto">{t("pagination.autoFit")}</option>
         <option value="all">{t("common.all")}</option>
-        {!detailAll && !autoFit && !pageSizeOptions.includes(pageSize) ? <option value={String(pageSize)}>{pageSize}</option> : null}
         {pageSizeOptions.map((n) => (
           <option key={n} value={n}>
             {n}
           </option>
         ))}
+        {!detailAll && !autoFit && !pageSizeOptions.includes(pageSize) ? <option value={String(pageSize)}>{pageSize}</option> : null}
+        <option value="auto">{t("pagination.autoFit")}</option>
       </select>
       {paged ? <span className="text-slate-500">{t("pagination.items")}</span> : null}
       <span className="text-slate-300">|</span>

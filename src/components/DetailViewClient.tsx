@@ -24,6 +24,7 @@ import { BasicDetailBatchDeleteButton,
   useBasicDetailSelection,
   usePruneBasicDetailSelection,
 } from "./BasicDetailSelection";
+import { useIsMobileDevice } from "./DeviceKindProvider";
 import type { BatchReplaceField } from "@/lib/client/batchReplaceEntries";
 import { useI18n } from "@/lib/i18n";
 import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE, effectiveAmountForAccount, getBalanceReconcileTarget, isReconciledEntry } from "@/lib/balance-reconcile";
@@ -328,6 +329,9 @@ export type DetailEntry = {
     Tag: { name: string; color: string } | null;
   }>;
 };
+
+const detailEntryRowKey = (entry: DetailEntry) => entry.id;
+const isSelectableDetailEntry = (entry: DetailEntry) => !entry.readOnly;
 
 function cssEscape(value: string) {
   const escape = typeof window !== "undefined" ? window.CSS?.escape : undefined;
@@ -868,6 +872,7 @@ export function DetailViewClient({
   /** 「对账」锁定余额时用的明细视图账户（多账户视图留空，按每行自己的账户算）。 */
   reconcileContextAccountId?: string | null;
 }) {
+  const isMobileDevice = useIsMobileDevice();
   const { t } = useI18n();
   const storageKey = storageKeyProp ?? basicDetailTableStorageKey(accountId);
   // Run before the child table's useEffect reads localStorage: the parent
@@ -1465,12 +1470,13 @@ export function DetailViewClient({
   const selectedCount = selectedIds.size;
   // 「对账」锁定余额时用的明细视图账户：单账户明细视图就是 accountId。
   const reconcileAccountId = reconcileContextAccountId ?? accountId;
-  const currentEntryIds = useMemo(() => entries.map((entry) => entry.id), [entries]);
+  const entriesById = useMemo(() => new Map(entries.map((entry) => [entry.id, entry] as const)), [entries]);
   const selectedFlowSummary = useMemo(() => {
     const inflowByCurrency = new Map<string, number>();
     const outflowByCurrency = new Map<string, number>();
-    for (const entry of entries) {
-      if (!selectedIds.has(entry.id)) continue;
+    for (const id of selectedIds) {
+      const entry = entriesById.get(id);
+      if (!entry) continue;
       const amount = detailFlowAmountOf(entry);
       const currency = entryCurrency(entry);
       if (!inflowByCurrency.has(currency)) inflowByCurrency.set(currency, 0);
@@ -1485,17 +1491,18 @@ export function DetailViewClient({
       inflow: formatSelectedAmountsByCurrency(inflowByCurrency),
       outflow: formatSelectedAmountsByCurrency(outflowByCurrency),
     };
-  }, [detailFlowAmountOf, entries, selectedIds]);
+  }, [detailFlowAmountOf, entriesById, selectedIds]);
   const selectedCategoryTypes = useMemo(() => {
     const types = new Set<string>();
-    for (const entry of entries) {
-      if (!selectedIds.has(entry.id)) continue;
+    for (const id of selectedIds) {
+      const entry = entriesById.get(id);
+      if (!entry) continue;
       const categoryType = batchCategoryTypeForEntry(entry);
       if (categoryType) types.add(categoryType);
     }
     return Array.from(types);
-  }, [entries, selectedIds]);
-  usePruneBasicDetailSelection(currentEntryIds);
+  }, [entriesById, selectedIds]);
+  usePruneBasicDetailSelection(entriesById);
   const detailRefreshSeqRef = useRef(0);
   const lastResetKeyRef = useRef<string | undefined>(resetKey);
   const entriesRef = useRef(entries);
@@ -2098,6 +2105,7 @@ export function DetailViewClient({
   ) : undefined;
   const tableResetKey = resetKey ?? `${accountId}:detail-table`;
   const mobileGroups = useMemo(() => {
+    if (!isMobileDevice) return [];
     const groups: Array<{ date: string; entries: DetailEntry[] }> = [];
     for (const entry of visibleEntries) {
       const date = detailEntryDayKey(entry, flowAccountIdOf(entry)) || t("detailView.noDate");
@@ -2106,7 +2114,7 @@ export function DetailViewClient({
       else groups.push({ date, entries: [entry] });
     }
     return groups;
-  }, [accountId, flowAccountIdOf, t, visibleEntries]);
+  }, [accountId, flowAccountIdOf, isMobileDevice, t, visibleEntries]);
 
   /** 表头筛选控件：绑定货基的钱包换成「收益」开关，其它账户仍是「交易类型」下拉。 */
   const tableToolbarFilters = showMoneyIncomeToggle ? (
@@ -2126,7 +2134,7 @@ export function DetailViewClient({
 
   return (
     <>
-    <div className="h-full overflow-y-auto bg-slate-100 desktop:hidden">
+    {isMobileDevice && <div className="h-full overflow-y-auto bg-slate-100">
       {tableToolbarFilters ? (
         <div className="sticky top-0 z-20 flex items-center justify-end gap-2 border-b border-slate-200 bg-slate-100/96 px-3 py-2 backdrop-blur">
           {tableToolbarFilters}
@@ -2203,8 +2211,8 @@ export function DetailViewClient({
       ) : (
         <div className="flex h-40 items-center justify-center text-sm text-slate-400">{resolvedEmptyText}</div>
       )}
-    </div>
-    <div className="hidden h-full desktop:block">
+    </div>}
+    {!isMobileDevice && <div className="h-full">
     <AdvancedDataTable
       storageKey={storageKey}
       resetKey={tableResetKey}
@@ -2217,7 +2225,7 @@ export function DetailViewClient({
       onDateRangeBoundsRefresh={onDateRangeBoundsRefresh}
       dateRangeBoundsLoading={dateRangeBoundsLoading}
       initialFilters={initialFilters}
-      rowKey={(entry) => entry.id}
+      rowKey={detailEntryRowKey}
       minTableWidth={1160}
       emptyText={resolvedEmptyText}
       selectable
@@ -2226,7 +2234,7 @@ export function DetailViewClient({
       selectedKeys={selectedIds}
       onSelectionChange={setSelection}
       // 报表合成行没有 TxRecord：勾选后批量删除 / 批量替换会拿不存在的 id 去写库。
-      rowSelectable={(entry) => !entry.readOnly}
+      rowSelectable={isSelectableDetailEntry}
       onRowDoubleClick={(entry) => {
         if (entry.readOnly) return;
         void openEntryEditor(entry, isReconciledEntry(entry));
@@ -2329,7 +2337,7 @@ export function DetailViewClient({
       scrollToRowKey={scrollToRowKey}
       scrollToRowRequestId={scrollToRowRequestId}
     />
-    </div>
+    </div>}
     <EntryAttachmentWindow
       open={attachmentViewEntryId != null}
       entryId={attachmentViewEntryId}

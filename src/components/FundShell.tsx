@@ -26,6 +26,7 @@ import { recordRecentAccounts } from "@/lib/client/recentAccounts";
 import { useEntryReconcileState } from "@/lib/client/use-entry-reconcile-state";
 import { setEntryModalReconciledReadOnly } from "@/lib/client/entryModalLock";
 import { BasicDetailReconcileLockButton } from "@/components/BasicDetailSelection";
+import { useIsMobileDevice } from "@/components/DeviceKindProvider";
 
 import { ChartLine, Library, List, Package, Pencil, Settings2, SlidersHorizontal, Trash2, X } from "lucide-react";
 
@@ -748,6 +749,7 @@ export function FundShell(props: Props) {
     fundUnitsDecimals: fundUnitsDecimalsProp,
 
   } = props;
+  const isMobileDevice = useIsMobileDevice();
 
   // 贵金属数量不能跟着基金份额的 2 位走：录入、明细、持仓、导出共用这份精度。
   const fundUnitsDecimals = resolveQuantityDecimals(
@@ -1523,7 +1525,8 @@ export function FundShell(props: Props) {
           ? `&wealthProductId=${encodeURIComponent(code)}`
           : `&fundCode=${encodeURIComponent(code)}`
         : "";
-      const res = await fetch(`/api/v1/fund/shell-data?accountId=${encodeURIComponent(accountId)}${selectedParam}&showCleared=${sc}&entryScope=account`);
+      const entryScope = code && !showAllRecords ? "fund" : "account";
+      const res = await fetch(`/api/v1/fund/shell-data?accountId=${encodeURIComponent(accountId)}${selectedParam}&showCleared=${sc}&entryScope=${entryScope}`);
       const json = await res.json();
       if (json.ok && seq === shellDataRequestSeq.current) {
         startTransition(() => {
@@ -1554,8 +1557,10 @@ export function FundShell(props: Props) {
           });
         });
       }
-    } catch {}
-  }, [accountId, entryAssetKey, isWealthAccount]);
+    } catch (error) {
+      console.error("Load fund shell data failed:", error);
+    }
+  }, [accountId, entryAssetKey, isWealthAccount, showAllRecords]);
 
   const handleEntryNavFilled = useCallback((entry: any, data: { nav: number; confirmDate: string; units: number; arrivalDate?: string }) => {
     const code = entry.fundCode || fundCodeRef.current;
@@ -1657,7 +1662,9 @@ export function FundShell(props: Props) {
             });
           });
         }
-      } catch {} finally {
+      } catch (error) {
+        console.error("Refresh fund shell data failed:", error);
+      } finally {
         refreshBusy.current = false;
         if (refreshPending.current) {
           refreshPending.current = false;
@@ -1727,16 +1734,40 @@ export function FundShell(props: Props) {
         return String(b.id ?? "").localeCompare(String(a.id ?? ""));
       });
   }, [d.allEntries, detailCategories, entryAssetKey, fundApplyDateOf, fundCode, isWealthAccount, showAllRecords]);
+  const filteredAssetKeysById = useMemo(() => {
+    const keysById = new Map<string, string | string[]>();
+    for (const entry of filtered as any[]) {
+      const id = String(entry?.id ?? "");
+      if (!id) continue;
+      const key = entryAssetKey(entry);
+      if (!keysById.has(id)) {
+        keysById.set(id, key);
+        continue;
+      }
+      const existing = keysById.get(id);
+      if (typeof existing === "string" && existing !== key) {
+        keysById.set(id, [existing, key]);
+      } else if (Array.isArray(existing) && !existing.includes(key)) {
+        existing.push(key);
+      }
+    }
+    return keysById;
+  }, [entryAssetKey, filtered]);
   // 明细表勾选的行 → 去重后的基金（理财/贵金属按产品），供「导出选中基金」使用。
   const selectedFundCodes = useMemo(() => {
     const codes = new Set<string>();
-    for (const entry of filtered as any[]) {
-      if (!selectedIds.has(String(entry?.id ?? ""))) continue;
-      const key = entryAssetKey(entry);
-      if (key) codes.add(key);
+    for (const id of selectedIds) {
+      const keyOrKeys = filteredAssetKeysById.get(id);
+      if (typeof keyOrKeys === "string") {
+        if (keyOrKeys) codes.add(keyOrKeys);
+      } else if (keyOrKeys) {
+        for (const key of keyOrKeys) {
+          if (key) codes.add(key);
+        }
+      }
     }
     return codes;
-  }, [filtered, selectedIds, entryAssetKey]);
+  }, [filteredAssetKeysById, selectedIds]);
   const selectedPosition = useMemo(
     () => (d.positions || []).find((p: any) => positionAssetKey(p) === fundCode) ?? null,
     [d.positions, fundCode, positionAssetKey],
@@ -2505,7 +2536,7 @@ export function FundShell(props: Props) {
 
 
 
-  const filteredByColumnsIdSet = useMemo(() => new Set(filteredByColumns.map((e: any) => e.id)), [filteredByColumns]);
+  const filteredByColumnsIdSet = filteredAssetKeysById;
 
   const batchTargetIds = useMemo(() => Array.from(selectedIds).filter((id) => filteredByColumnsIdSet.has(id)), [selectedIds, filteredByColumnsIdSet]);
 
@@ -3662,7 +3693,7 @@ export function FundShell(props: Props) {
         <div className="ft-card-surface ft-card-surface-fill">
 
         <div className="flex-1 min-h-0 overflow-hidden">
-          <div className="block h-full overflow-y-auto overscroll-contain px-3 pb-4 pt-2 desktop:hidden">
+          {isMobileDevice && <div className="block h-full overflow-y-auto overscroll-contain px-3 pb-4 pt-2">
             {!showCleared ? (
               sortedPositions.length === 0 ? (
                 <div className="rounded-lg border border-dashed border-slate-300 bg-white px-4 py-10 text-center text-sm text-slate-500">{t("fundShell.empty.positions")}</div>
@@ -3762,9 +3793,9 @@ export function FundShell(props: Props) {
                 </div>
               )
             )}
-          </div>
+          </div>}
 
-          <div className="hidden h-full desktop:block">
+          {!isMobileDevice && <div className="h-full">
 
           {!showCleared ? (
 
@@ -3820,7 +3851,7 @@ export function FundShell(props: Props) {
 
           )}
 
-          </div>
+          </div>}
         </div>
 
         </div>
@@ -4067,7 +4098,7 @@ export function FundShell(props: Props) {
 
         </div>
 
-        <div className="block flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 pb-28 pt-2 desktop:hidden">
+        {isMobileDevice && <div className="block flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 pb-28 pt-2">
           {paged.length > 0 ? (
             <div className="space-y-2.5">
               {paged.map((e: any) => {
@@ -4219,8 +4250,8 @@ export function FundShell(props: Props) {
               {fundCode || showAllRecords || isWealthAccount ? t("fundShell.empty.entries") : chooseHoldingText}
             </div>
           )}
-        </div>
-        <div className="hidden flex-1 min-h-0 desktop:block">
+         </div>}
+        {!isMobileDevice && <div className="flex-1 min-h-0">
 
           <AdvancedDataTable
             storageKey="mmh_fund_shell_detail_advanced_table_v1"
@@ -4258,7 +4289,7 @@ export function FundShell(props: Props) {
             onRowsFitChange={fundPager.autoFit ? fundPager.fit : undefined}
           />
 
-        </div>
+        </div>}
 
       </div>
 
