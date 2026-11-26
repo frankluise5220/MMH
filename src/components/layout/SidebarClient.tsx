@@ -27,7 +27,7 @@ import {
   X,
 } from "lucide-react";
 import { MmhLogo } from "@/components/MmhLogo";
-import { withBasePath } from "@/lib/base-path";
+import { withBasePath, withoutBasePath } from "@/lib/base-path";
 import { LedgerSwitcher } from "../LedgerSwitcher";
 import { NewLedgerSetupCheck } from "../NewLedgerSetupCheck";
 import { DailyTaskCheck } from "../DailyTaskCheck";
@@ -1447,7 +1447,7 @@ export function SidebarClient({
     if (target.searchParams.get("view") !== "detail" || !hasCompletedAccountDetailCache(item.id)) return;
     target.searchParams.set("_detailCache", "1");
     event.preventDefault();
-    router.push(`${target.pathname}${target.search}${target.hash}`, { scroll: false });
+    router.push(withoutBasePath(`${target.pathname}${target.search}${target.hash}`), { scroll: false });
   }
 
   function sidebarItemHoverTitle(it: AccountItem) {
