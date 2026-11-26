@@ -1,10 +1,11 @@
 /**
  * Cross-request cache module for the display layer
  *
- * Principles (CLAUDE.md):
- * - First read hits the DB → subsequent reads go through the cache → only writes/edits/deletes touch the DB and refresh the cache
- * - common data (not account-dependent): unstable_cache cross-request cache
- * - per-account data (account-dependent): React.cache() request-level deduplication
+ * Cache scope:
+ * - Common data uses unstable_cache across requests and is refreshed by its tags.
+ * - Account-dependent loaders use React.cache() only to deduplicate calls within
+ *   the current request; a later request reads the database again.
+ * - Do not treat request-level deduplication as a durable cache or skip required reads.
  */
 
 import { cache } from "react";
