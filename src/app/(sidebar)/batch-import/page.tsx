@@ -78,6 +78,7 @@ import {
   wechatTransferBlockMessage,
 } from "@/lib/statement/wechat-transfer-guard";
 import { suggestTransferCounterAccountName } from "@/lib/statement/transfer-counter-account";
+import { isSameAccountReference } from "@/lib/statement/credit-card-repayment-source";
 import {
   CREDIT_CARD_REPAYMENT_BUSINESS_TYPE,
   CREDIT_CARD_REPAYMENT_CATEGORY_NAME,
@@ -729,9 +730,13 @@ function previewTransferDirectionFor(
 function directionalAccountValues(item: ParsedItem) {
   const direction = previewTransferDirectionFor(item);
   if (item.type === "transfer") {
+    const account = (direction === "in" ? item.toAccount : item.fromAccount) || item.account || "";
+    const counter = (direction === "in" ? item.fromAccount : item.toAccount) || "";
     return {
-      account: (direction === "in" ? item.toAccount : item.fromAccount) || item.account || "",
-      counterAccount: (direction === "in" ? item.fromAccount : item.toAccount) || "",
+      account,
+      // 一笔转账的两侧不能是同一个账户：账单里的「自扣还款」若把本卡自己当成付款方，
+      // 就会记成一笔不存在的「本卡 → 本卡」转账，付款方应留给用户点选同机构借记卡。
+      counterAccount: isSameAccountReference(account, counter) ? "" : counter,
       direction,
     };
   }

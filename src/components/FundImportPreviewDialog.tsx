@@ -42,6 +42,7 @@ import {
   rowsBeforeTemplateGuide,
 } from "@/lib/import-template-sample";
 import { useI18n } from "@/lib/i18n";
+import { guardPartialImportSelection } from "@/lib/client/import-selection-guard";
 import { parseStatementCsv } from "@/lib/statement/statement-sheet-reader";
 import { readAccountDisplaySettings } from "@/lib/client/account-display-settings";
 import { getAccountDropdownGroupByPreference } from "@/lib/client/appPreferences";
@@ -1665,6 +1666,16 @@ export function FundImportPreviewDialog({ open, file, context, tabs = null, sour
       if (selectedBlocking.length > 0) {
         setMessage(formatText(t, "batchImport.importReadyEmpty", { count: selectedBlocking.length }));
       }
+      return;
+    }
+    // 少选保护：还有可导入记录没勾选时先问一句，避免只导入了一部分却以为导了整份。
+    if (
+      !(await guardPartialImportSelection({
+        readyTotal: previewItems.filter((item) => !hasBlockingIssue(item)).length,
+        selectedReady: selectedItems.length,
+        t,
+      }))
+    ) {
       return;
     }
 

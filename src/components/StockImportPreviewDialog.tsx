@@ -22,6 +22,7 @@ import {
   type AccountDisplayOption,
 } from "@/lib/account-display";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { guardPartialImportSelection } from "@/lib/client/import-selection-guard";
 import { fetchSettingsBootstrap } from "@/lib/client/settingsCache";
 import { addTradingDaysUtc } from "@/lib/date-utils";
 import { formatAmountDraft } from "@/lib/format";
@@ -648,6 +649,16 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
       if (selectedBlocking.length > 0) {
         setMessage(formatText(t, "batchImport.importReadyEmpty", { count: selectedBlocking.length }));
       }
+      return;
+    }
+    // 少选保护：还有可导入记录没勾选时先问一句，避免只导入了一部分却以为导了整份。
+    if (
+      !(await guardPartialImportSelection({
+        readyTotal: previewItems.filter((item) => !hasBlockingIssue(item)).length,
+        selectedReady: selectedItems.length,
+        t,
+      }))
+    ) {
       return;
     }
 

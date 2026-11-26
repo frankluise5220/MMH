@@ -39,6 +39,7 @@
     "check:client-boundary": "node scripts/check-client-boundary.cjs",
     "check:import-match": "tsx scripts/verify-import-account-match.ts",
     "check:credit-card-institution": "tsx scripts/verify-credit-card-institution.ts",
+    "check:cc-repayment-source": "tsx scripts/verify-credit-card-repayment-source.ts",
     "check:credit-entry-channel": "tsx scripts/verify-credit-entry-channel.ts",
     "check:credit-detail-cache": "tsx scripts/verify-credit-detail-cache.ts",
     "check:single-writer": "node scripts/check-single-writer.cjs",

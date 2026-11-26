@@ -47,6 +47,14 @@ import {
 import { statementPreviewCategorySyncKey } from "@/lib/statement/preview-category-sync";
 import { resolveWechatTransferGuard, wechatTransferBlockMessage } from "@/lib/statement/wechat-transfer-guard";
 import { suggestTransferCounterAccountName } from "@/lib/statement/transfer-counter-account";
+import { guardPartialImportSelection } from "@/lib/client/import-selection-guard";
+import {
+  accountTail,
+  isCreditCardRepaymentText,
+  isSameAccountReference,
+  looksLikeCreditCardAccountName,
+  pickSameInstitutionDebitCard,
+} from "@/lib/statement/credit-card-repayment-source";
 import { uniqueStatementInfoTexts } from "@/lib/statement/preview-meta";
 import { compareCreditCardProfile, type CreditCardProfileMismatch } from "@/lib/statement/credit-card-summary";
 import { systemCategoryLabel } from "@/lib/system-category-labels";
@@ -499,6 +507,25 @@ function isPreviewAccountResolvable(
   );
 }
 
+/** 转账两侧是否落在同一个账户：同 id、同尾号，或归一后同一引用。 */
+function isSamePreviewAccountSide(
+  primaryValue: string,
+  primaryMatched: BookAccount | null,
+  counterValue: string,
+  counterMatched: BookAccount | null,
+) {
+  if (primaryMatched && counterMatched) return primaryMatched.id === counterMatched.id;
+  if (primaryMatched) {
+    const tail = accountTail(counterValue);
+    if (tail && accountTail(primaryMatched.numberMasked ?? "") === tail) return true;
+  }
+  if (counterMatched) {
+    const tail = accountTail(primaryValue);
+    if (tail && accountTail(counterMatched.numberMasked ?? "") === tail) return true;
+  }
+  return isSameAccountReference(primaryValue, counterValue);
+}
+
 function canonicalizePreviewItemAccounts(
   item: StatementImportPreviewItem,
   defaultAccountName: string,
@@ -512,11 +539,41 @@ function canonicalizePreviewItemAccounts(
     };
   }
 
-  const transferOut = isTransferOut(item);
+  const rawTransferOut = isTransferOut(item);
   const primaryValue = primaryAccountValue(item, defaultAccountName);
   const counterValue = counterAccountValue(item);
+  const primaryMatched = findPreviewAccount(primaryValue, lookup, item._meta);
+  const counterMatched = findPreviewAccount(counterValue, lookup);
+  const transferText = [item.rawText, item.remark, item.fromAccount, item.toAccount, item.account, item.category]
+    .filter(Boolean)
+    .join(" ");
+  const repaymentLike = isCreditCardRepaymentText(transferText);
+  const primaryRefersCreditCard =
+    primaryMatched?.kind === "bank_credit" || looksLikeCreditCardAccountName(primaryValue);
+
+  // 「自扣还款 / 自动还款 / 银联入账」说的是钱进了这张信用卡：若被金额符号带成流出，
+  // 付款方就会变成这张卡自己，这里把方向纠回流入。
+  const transferOut = rawTransferOut && !(repaymentLike && primaryRefersCreditCard);
+
+  let counterAccount = canonicalizePreviewAccountValue(counterValue, lookup);
+  const sameAccountSide = isSamePreviewAccountSide(primaryValue, primaryMatched, counterValue, counterMatched);
+  // 信用卡不会「自己还自己」，本账户也不可能转账给自己：付款方要么按同机构借记卡补全，
+  // 要么留空让用户点选——留空的成本远低于记一笔不存在的转账。
+  if (sameAccountSide || (repaymentLike && !counterValue && primaryRefersCreditCard)) {
+    const institutionName =
+      cleanText(item._meta?.institutionName) ||
+      cleanText(primaryMatched?.Institution?.name) ||
+      cleanText(primaryMatched?.Institution?.shortName);
+    const suggestion = pickSameInstitutionDebitCard(Array.from(lookup.accountById.values()), {
+      institutionName,
+      excludeIds: [primaryMatched?.id],
+      excludeRefs: [primaryValue, counterValue],
+    });
+    counterAccount = suggestion ? encodeImportAccountId(suggestion.id) : undefined;
+  }
+
   const primaryAccount = canonicalizePreviewAccountValue(primaryValue, lookup, item._meta);
-  const counterAccount = canonicalizePreviewAccountValue(counterValue, lookup);
+  const directionCorrected = transferOut !== rawTransferOut;
   return transferOut
     ? {
         ...item,
@@ -529,6 +586,13 @@ function canonicalizePreviewItemAccounts(
         account: primaryAccount,
         fromAccount: counterAccount,
         toAccount: primaryAccount,
+        ...(directionCorrected
+          ? {
+              transferDirection: "in" as const,
+              inflow: Math.abs(Number(item.amount) || 0) || undefined,
+              outflow: undefined,
+            }
+          : {}),
       };
 }
 
@@ -1442,7 +1506,9 @@ export function StatementImportPreviewDialog({
       return cleanText(item.account) ? item : { ...item, account: cleanText(defaultAccountName) || undefined };
     }
     const primaryAccount = primaryAccountValue(item, defaultAccountName);
-    const counterAccount = counterAccountValue(item);
+    const rawCounterAccount = counterAccountValue(item);
+    // 最后一道保险：无论前面怎么纠，都不能把同一笔转账的两侧写进同一个账户。
+    const counterAccount = isSameAccountReference(primaryAccount, rawCounterAccount) ? "" : rawCounterAccount;
     return isTransferOut(item)
       ? {
           ...item,
@@ -1465,6 +1531,16 @@ export function StatementImportPreviewDialog({
     // 未匹配/未就绪行允许勾选与批量修改，但最终只导入已就绪的勾选行
     const selectedRows = sourceRows.filter((row) => effectiveSelectedKeys.has(row.key) && row.ready);
     if (selectedRows.length === 0) return;
+    // 少选保护：还有可导入记录没勾选时先问一句，避免「确认导入 3 条」被当成全量确认。
+    if (
+      !(await guardPartialImportSelection({
+        readyTotal: sourceRows.filter((row) => row.ready).length,
+        selectedReady: selectedRows.length,
+        t,
+      }))
+    ) {
+      return;
+    }
     const selectedItems = selectedRows.map((row) => previewItemForImport(row.item));
     if (selectedItems.length === 0) return;
     // 唯一判重出口：所有入口（明细页 Excel、设置页邮件、邮件自动导入、AI 助手、批量导入页）
