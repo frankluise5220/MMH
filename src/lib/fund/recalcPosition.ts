@@ -65,10 +65,6 @@ function entryCalcDate(e: FundPositionEntryLike): string {
   return fundEntryCalcDateKey(e);
 }
 
-function buyAvailableDate(e: FundPositionEntryLike): string {
-  return e.confirmDate ?? e.arrivalDate ?? "";
-}
-
 type FundHoldingCalc = { units: number; cost: number; pendingCost: number; historicalProfit: number };
 
 function emptyHolding(): FundHoldingCalc {
@@ -288,48 +284,32 @@ function calcByFifo(entries: FundPositionEntryLike[], fundUnitsDecimals: number,
     } else if (subtype === "dividend_cash") {
       rec.historicalProfit += e.realizedProfit != null ? toNum(e.realizedProfit) : Math.abs(amount);
     } else if (subtype === "redeem" || subtype === "switch_out") {
-      const cutoff = e.confirmDate ?? "";
-
-      let eligibleLots: Lot[] = [];
-      for (const se of sorted) {
-        if (se === e) break;
-        if (se.fundCode !== code) continue;
-       const sSubtype = se.subtype ?? (se.amount < 0 ? "buy" : "redeem");
-       if (sSubtype !== "buy") continue;
-       const u = se.units ?? 0;
-       if (u <= 0) continue;
-       const availableDate = buyAvailableDate(se);
-       if (!availableDate || availableDate > cutoff) continue;
-       const sCost = buyEntryCostBasis(se, se.amount);
-       eligibleLots.push({ units: u, costPerUnit: u > 0 ? sCost / u : 0 });
-      }
-
-      let toRedeem = e.units ?? 0;
-      let costReduced = 0;
-      const queue = lifo ? [...eligibleLots].reverse() : eligibleLots;
-      for (const lot of queue) {
-        if (toRedeem <= 0) break;
-        const take = Math.min(lot.units, toRedeem);
-        costReduced += take * lot.costPerUnit;
-        lot.units = Math.max(0, roundFundUnits(lot.units - take, fundUnitsDecimals));
-        toRedeem -= take;
-      }
-      const actualQueue = lifo ? [...codeLots].reverse() : codeLots;
+      // 赎回必须只吃「当前剩余批次」：批次表和成本扣减同源，才不会分叉。
+      // 历史实现每次从 sorted 里重扫全部买入行重建 lot 队列，已赎回吃掉的份额会被
+      // 重新算一遍——多次赎回后成本扣减对不上批次，持仓成本虚高（519066 实测
+      // 43943.21，正确值 28515.63）。
+      const queue = lifo ? [...codeLots].reverse() : codeLots;
       let remaining = e.units ?? 0;
-      for (const lot of actualQueue) {
+      let costReduced = 0;
+      for (const lot of queue) {
         if (remaining <= 0) break;
         const take = Math.min(lot.units, remaining);
+        costReduced += take * lot.costPerUnit;
         lot.units = Math.max(0, roundFundUnits(lot.units - take, fundUnitsDecimals));
         remaining -= take;
       }
-      lots.set(code, codeLots.filter(l => l.units > 0));
-      rec.units = Math.max(0, roundFundUnits(rec.units - (e.units ?? 0), fundUnitsDecimals));
+      lots.set(code, codeLots.filter((lot) => lot.units > 0));
+      rec.units = Math.max(0, roundFundUnits(rec.units - ((e.units ?? 0) - remaining), fundUnitsDecimals));
       rec.cost = Math.max(0, rec.cost - costReduced);
       const proceeds = redeemProceeds(e, amount);
       const realizedProfit = proceeds - costReduced;
       rec.historicalProfit += realizedProfit;
       realizedProfitByEntryId.set(e.id, realizedProfit);
     }
+
+    // 成本不变式：持仓成本永远等于剩余批次成本之和（含 0 成本的分红再投批次）。
+    // 有了它，任何分支都不需要自己维护 rec.cost，也就不会再次出现「成本与批次脱节」。
+    rec.cost = Math.max(0, codeLots.reduce((sum, lot) => sum + lot.units * lot.costPerUnit, 0));
 
     result.set(code, rec);
   }

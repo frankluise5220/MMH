@@ -44,6 +44,7 @@
     "check:account-balance": "tsx scripts/verify-account-balance-window.ts",
     "check:running-balance": "tsx scripts/verify-detail-running-balance-recalc.ts",
     "check:detail-balance": "tsx scripts/verify-detail-balance-window-independent.ts",
+    "check:fund-cost-basis": "tsx scripts/verify-fund-cost-basis.ts",
     "check:regular-invest-cursor": "tsx scripts/verify-regular-invest-cursor.ts",
     "check:reconcile-patch": "tsx scripts/verify-reconcile-inplace-patch.ts",
     "check:credit-cycle": "tsx scripts/verify-credit-cycle-boundaries.ts",
