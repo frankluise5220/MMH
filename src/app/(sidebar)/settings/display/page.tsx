@@ -26,6 +26,7 @@ import {
   getSidebarHideInitialDataPreference,
   getSidebarHideZeroPreference,
   getSidebarMergeConsolidatedCreditCardsPreference,
+  getSidebarMoneyFundWalletsAsInvestmentsPreference,
   getSidebarShowFixedAssetsPreference,
   getSidebarShowAllCashEntriesPreference,
   getSidebarShowReimbursementsPreference,
@@ -46,6 +47,7 @@ import {
   setSidebarHideInitialDataPreference,
   setSidebarHideZeroPreference,
   setSidebarMergeConsolidatedCreditCardsPreference,
+  setSidebarMoneyFundWalletsAsInvestmentsPreference,
   setSidebarShowFixedAssetsPreference,
   setSidebarShowAllCashEntriesPreference,
   setSidebarShowReimbursementsPreference,
@@ -243,6 +245,7 @@ export default function DisplaySettingsPage() {
   const [sidebarMergeConsolidatedCreditCards, setSidebarMergeConsolidatedCreditCards] = useState(false);
   const [sidebarHideInitialData, setSidebarHideInitialData] = useState(false);
   const [sidebarShowFixedAssets, setSidebarShowFixedAssets] = useState(true);
+  const [sidebarMoneyFundWalletsAsInvestments, setSidebarMoneyFundWalletsAsInvestments] = useState(false);
   const [sidebarShowAllCashEntries, setSidebarShowAllCashEntries] = useState(true);
   const [sidebarShowReimbursements, setSidebarShowReimbursements] = useState(true);
   const [detailDateBackground, setDetailDateBackground] = useState(false);
@@ -278,6 +281,7 @@ export default function DisplaySettingsPage() {
     setSidebarMergeConsolidatedCreditCards(getSidebarMergeConsolidatedCreditCardsPreference());
     setSidebarHideInitialData(getSidebarHideInitialDataPreference());
     setSidebarShowFixedAssets(getSidebarShowFixedAssetsPreference());
+    setSidebarMoneyFundWalletsAsInvestments(getSidebarMoneyFundWalletsAsInvestmentsPreference());
     setSidebarShowAllCashEntries(getSidebarShowAllCashEntriesPreference());
     setSidebarShowReimbursements(getSidebarShowReimbursementsPreference());
     setDetailDateBackground(getDetailDateBackgroundPreference());
@@ -665,6 +669,27 @@ export default function DisplaySettingsPage() {
     } catch {
       setSidebarShowFixedAssets(prev);
       setSidebarShowFixedAssetsPreference(prev);
+    }
+  }
+
+  async function updateSidebarMoneyFundWalletsAsInvestments(next: boolean) {
+    const prev = sidebarMoneyFundWalletsAsInvestments;
+    setSidebarMoneyFundWalletsAsInvestments(next);
+    setSidebarMoneyFundWalletsAsInvestmentsPreference(next);
+    try {
+      const res = await fetch("/api/v1/settings/app-preferences", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sidebarMoneyFundWalletsAsInvestments: next }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setSidebarMoneyFundWalletsAsInvestments(prev);
+        setSidebarMoneyFundWalletsAsInvestmentsPreference(prev);
+      }
+    } catch {
+      setSidebarMoneyFundWalletsAsInvestments(prev);
+      setSidebarMoneyFundWalletsAsInvestmentsPreference(prev);
     }
   }
 
@@ -1233,6 +1258,17 @@ export default function DisplaySettingsPage() {
               checked={sidebarShowFixedAssets}
               onCheckedChange={(next) => void updateSidebarShowFixedAssets(next)}
               label={t("settings.display.showFixedAssets")}
+            />
+          </SettingRow>
+          <SettingRow
+            title={t("settings.display.moneyFundWalletsAsInvestments")}
+            desc={t("settings.display.moneyFundWalletsAsInvestmentsDesc")}
+            hideDesc={hideSettingDescriptions}
+          >
+            <SettingsSwitch
+              checked={sidebarMoneyFundWalletsAsInvestments}
+              onCheckedChange={(next) => void updateSidebarMoneyFundWalletsAsInvestments(next)}
+              label={t("settings.display.moneyFundWalletsAsInvestments")}
             />
           </SettingRow>
           <SettingRow title={t("settings.display.showAllCashEntries")} desc={t("settings.display.showAllCashEntriesDesc")} hideDesc={hideSettingDescriptions}>

@@ -58,6 +58,7 @@ const SIDEBAR_SHOW_FIXED_ASSETS_KEY = "sidebar_show_fixed_assets";
 const SIDEBAR_SHOW_ALL_CASH_ENTRIES_KEY = "sidebar_show_all_cash_entries";
 const SIDEBAR_SHOW_REIMBURSEMENTS_KEY = "sidebar_show_reimbursements";
 const SIDEBAR_MERGE_CONSOLIDATED_CREDIT_CARDS_KEY = "sidebar_merge_consolidated_credit_cards";
+const SIDEBAR_MONEY_FUND_WALLETS_AS_INVESTMENTS_KEY = "sidebar_money_fund_wallets_as_investments";
 const DETAIL_DATE_BACKGROUND_KEY = "detail_date_background";
 const ROW_HEIGHT_MODE_KEY = "advanced_data_table_row_height_mode";
 export const ACCOUNT_LABEL_FIELDS_COOKIE = "mmh_account_label_fields";
@@ -102,6 +103,7 @@ type AppPreferencesSnapshot = {
   sidebarShowAllCashEntries: boolean;
   sidebarShowReimbursements: boolean;
   sidebarMergeConsolidatedCreditCards: boolean;
+  sidebarMoneyFundWalletsAsInvestments: boolean;
   detailDateBackground: boolean;
   rowHeightMode: RowHeightMode;
   sidebarCollapsed: boolean;
@@ -392,6 +394,29 @@ export function setSidebarMergeConsolidatedCreditCardsPreference(value: boolean)
   emitPreferencesChanged();
 }
 
+/**
+ * 侧边栏是否把「绑定了货币基金的电子钱包」归到「投资」分组（默认关）。
+ * 只影响显示位置：账户类型、导航目标、余额口径都不变。
+ */
+export function getSidebarMoneyFundWalletsAsInvestmentsPreference(): boolean {
+  try {
+    const value = localStorage.getItem(SIDEBAR_MONEY_FUND_WALLETS_AS_INVESTMENTS_KEY)
+      ?? parseCookieValue(SIDEBAR_MONEY_FUND_WALLETS_AS_INVESTMENTS_KEY);
+    return value === "true" || value === "1";
+  } catch {
+    const value = parseCookieValue(SIDEBAR_MONEY_FUND_WALLETS_AS_INVESTMENTS_KEY);
+    return value === "true" || value === "1";
+  }
+}
+
+export function setSidebarMoneyFundWalletsAsInvestmentsPreference(value: boolean) {
+  try {
+    localStorage.setItem(SIDEBAR_MONEY_FUND_WALLETS_AS_INVESTMENTS_KEY, String(value));
+  } catch {}
+  setCookieValue(SIDEBAR_MONEY_FUND_WALLETS_AS_INVESTMENTS_KEY, String(value));
+  emitPreferencesChanged();
+}
+
 export function getDetailDateBackgroundPreference(): boolean {
   try {
     const value = localStorage.getItem(DETAIL_DATE_BACKGROUND_KEY) ?? parseCookieValue(DETAIL_DATE_BACKGROUND_KEY);
@@ -545,6 +570,7 @@ export function getAppPreferences(): AppPreferencesSnapshot {
     sidebarShowAllCashEntries: getSidebarShowAllCashEntriesPreference(),
     sidebarShowReimbursements: getSidebarShowReimbursementsPreference(),
     sidebarMergeConsolidatedCreditCards: getSidebarMergeConsolidatedCreditCardsPreference(),
+    sidebarMoneyFundWalletsAsInvestments: getSidebarMoneyFundWalletsAsInvestmentsPreference(),
     detailDateBackground: getDetailDateBackgroundPreference(),
     rowHeightMode: getRowHeightModePreference(),
     sidebarCollapsed: getSidebarCollapsedPreference(),

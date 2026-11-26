@@ -87,6 +87,7 @@ export type PreferenceRow = {
   accountDropdownRestrictType?: boolean | null;
   accountUsageSortEnabled?: boolean | null;
   repoOccupiedDaysMode?: string | null;
+  sidebarMoneyFundWalletsAsInvestments?: boolean | null;
 };
 
 /** 默认按使用频率排序，与引入开关之前的行为一致。 */
@@ -124,6 +125,11 @@ export type AppPreferences = {
   accountUsageSortEnabled: boolean;
   /** 逆回购占款天数口径（决定预计利息）。 */
   repoOccupiedDaysMode: RepoOccupiedDaysMode;
+  /**
+   * 侧边栏是否把「绑定了货币基金的电子钱包」显示在「投资」分组里。
+   * 只影响显示位置：账户还是电子钱包，点进去还是钱包视图，余额口径不变。
+   */
+  sidebarMoneyFundWalletsAsInvestments: boolean;
 };
 
 export function normalizeSessionDays(input: unknown): number {
@@ -252,6 +258,7 @@ export function preferencesFromRow(row: PreferenceRow | null | undefined): AppPr
     accountDropdownRestrictType: normalizeBoolean(row?.accountDropdownRestrictType, true),
     accountUsageSortEnabled: normalizeBoolean(row?.accountUsageSortEnabled, DEFAULT_ACCOUNT_USAGE_SORT_ENABLED),
     repoOccupiedDaysMode: normalizeRepoOccupiedDaysMode(row?.repoOccupiedDaysMode),
+    sidebarMoneyFundWalletsAsInvestments: normalizeBoolean(row?.sidebarMoneyFundWalletsAsInvestments, false),
   };
 }
 
@@ -292,4 +299,8 @@ export const PREFERENCE_COOKIE_MIRROR = [
   { key: "mmh_account_dropdown_restrict_type", pick: (p: AppPreferences) => (p.accountDropdownRestrictType ? "1" : "0") },
   { key: "mmh_account_usage_sort", pick: (p: AppPreferences) => (p.accountUsageSortEnabled ? "1" : "0") },
   { key: "mmh_repo_occupied_days_mode", pick: (p: AppPreferences) => p.repoOccupiedDaysMode },
+  {
+    key: "sidebar_money_fund_wallets_as_investments",
+    pick: (p: AppPreferences) => (p.sidebarMoneyFundWalletsAsInvestments ? "1" : "0"),
+  },
 ] as const;

@@ -136,6 +136,12 @@ export async function PUT(req: NextRequest) {
     if (has("repoOccupiedDaysMode")) {
       patch.repoOccupiedDaysMode = normalizeRepoOccupiedDaysMode(body.repoOccupiedDaysMode);
     }
+    if (has("sidebarMoneyFundWalletsAsInvestments")) {
+      patch.sidebarMoneyFundWalletsAsInvestments = normalizeBoolean(
+        body.sidebarMoneyFundWalletsAsInvestments,
+        false,
+      );
+    }
 
     const preferences = await updateHouseholdPreferences(householdId, patch);
     revalidateAfterSettingsChange();

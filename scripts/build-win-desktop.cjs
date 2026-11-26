@@ -507,6 +507,9 @@ function applyRuntimeMigrations(db) {
   // 2026-11-21 合并账单信用卡侧边栏单条显示。household-preferences.ts 用全列
   // findUnique，存量库缺列会让首屏/侧边栏抛 "no such column"。
   addColumnIfMissing(db, "HouseholdPreference", "sidebarMergeConsolidatedCreditCards", "BOOLEAN NOT NULL DEFAULT 0");
+  // 2026-11-26 侧边栏把绑定货基的电子钱包归入「投资」分组。同上全列 findUnique，
+  // 存量库缺列会让首屏/侧边栏抛 "no such column"。
+  addColumnIfMissing(db, "HouseholdPreference", "sidebarMoneyFundWalletsAsInvestments", "BOOLEAN NOT NULL DEFAULT 0");
   // 2026-11-22 附属卡：卡片所有人（用户自定义填写）与所属主卡。
   // 与 prisma/migrations/20261122_add_supplementary_card 及
   // build-fnos-package.cjs 的 MIGRATIONS 同义。漏掉这段：升级后的桌面库

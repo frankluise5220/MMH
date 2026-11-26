@@ -54,6 +54,7 @@ import {
   getSidebarGroupPreference,
   getSidebarHideZeroPreference,
   getSidebarMergeConsolidatedCreditCardsPreference,
+  getSidebarMoneyFundWalletsAsInvestmentsPreference,
   getSidebarOwnerFilterPreference,
   getSidebarShowFixedAssetsPreference,
   getSidebarShowAllCashEntriesPreference,
@@ -98,6 +99,8 @@ type AccountItem = {
   isConsumerLoan?: boolean;
   loanType?: string | null;
   investProductType?: string;
+  /** 绑定货币基金的电子钱包：仅为「是否归入投资分组」的显示判断，不改 kind。 */
+  linkedFundCode?: string | null;
   fixedAssetType?: string | null;
   /** 多币种层级：父账户 id（子账户才有）。 */
   parentId?: string | null;
@@ -428,6 +431,7 @@ function getSidebarItemSignature(item: AccountItem): string {
     item.isConsumerLoan ? "1" : "0",
     item.loanType ?? "",
     item.investProductType ?? "",
+    item.linkedFundCode ?? "",
     item.fixedAssetType ?? "",
     item.parentId ?? "",
     item.isAggregate ? "1" : "0",
@@ -474,6 +478,7 @@ function toSidebarAccountItem(a: any, t: (key: string, params?: Record<string, s
     isConsumerLoan: a.isConsumerLoan === true,
     loanType: a.loanType ?? null,
     investProductType: a.investProductType || undefined,
+    linkedFundCode: a.linkedFundCode ?? null,
     fixedAssetType: a.fixedAssetType ?? null,
     parentId: a.parentId ?? null,
     isAggregate: a.isAggregate === true,
@@ -522,6 +527,8 @@ export function SidebarClient({
     sidebarShowAllCashEntries: boolean;
     sidebarShowReimbursements: boolean;
     sidebarMergeConsolidatedCreditCards?: boolean;
+    /** 绑定货基的电子钱包是否归到「投资」分组（默认关）。 */
+    sidebarMoneyFundWalletsAsInvestments?: boolean;
     sidebarCollapsed: boolean;
     sidebarGroupBy: "kind" | "institution" | "accountGroup";
   };
@@ -562,6 +569,9 @@ export function SidebarClient({
   const [showReimbursements, setShowReimbursements] = useState(() => initialPreferences?.sidebarShowReimbursements ?? getSidebarShowReimbursementsPreference());
   const [mergeConsolidatedCreditCards, setMergeConsolidatedCreditCards] = useState(
     () => initialPreferences?.sidebarMergeConsolidatedCreditCards ?? getSidebarMergeConsolidatedCreditCardsPreference(),
+  );
+  const [moneyFundWalletsAsInvestments, setMoneyFundWalletsAsInvestments] = useState(
+    () => initialPreferences?.sidebarMoneyFundWalletsAsInvestments ?? getSidebarMoneyFundWalletsAsInvestmentsPreference(),
   );
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => initialPreferences?.sidebarCollapsed ?? getSidebarCollapsedPreference());
   const [sidebarGroupBy, setSidebarGroupBy] = useState<"kind" | "institution" | "accountGroup">(() => initialPreferences?.sidebarGroupBy ?? getSidebarGroupPreference());
@@ -873,6 +883,7 @@ export function SidebarClient({
       setShowAllCashEntries(prefs.sidebarShowAllCashEntries);
       setShowReimbursements(prefs.sidebarShowReimbursements);
       setMergeConsolidatedCreditCards(prefs.sidebarMergeConsolidatedCreditCards);
+      setMoneyFundWalletsAsInvestments(prefs.sidebarMoneyFundWalletsAsInvestments);
       setHideFirstUseGuide(prefs.sidebarHideInitialData);
       setSidebarCollapsed(prefs.sidebarCollapsed);
       setSidebarGroupBy(getSidebarGroupPreference());
@@ -1307,6 +1318,13 @@ export function SidebarClient({
       return [...fieldSections, ...buildLiabilitySections()];
     }
 
+    // 「设置 → 显示 → 绑定货基的电子钱包归入投资」打开后，带 6 位货基代码的钱包
+    // 在侧边栏按投资成员参与分组；item.kind 仍是 ewallet，导航目标（钱包视图）
+    // 与余额口径都不变，所以只在这里换一个用于分组的显示类型。
+    const sectionKindOf = (item: AccountItem) =>
+      moneyFundWalletsAsInvestments && item.kind === "ewallet" && item.linkedFundCode
+        ? "investment_money"
+        : item.kind;
     const groups = [
       { label: "资产", kinds: ASSET_KINDS },
       { label: "信用卡", kinds: CREDIT_KINDS },
@@ -1317,12 +1335,15 @@ export function SidebarClient({
       { label: LOAN_SECTION, kinds: LOAN_KINDS },
     ];
     return groups.map(g => {
-      const filtered = visibleItems.filter(it => g.kinds.includes(it.kind) || (g.label === "投资" && it.kind.startsWith("investment_") && it.kind !== "investment_property"));
+      const filtered = visibleItems.filter(it => {
+        const kind = sectionKindOf(it);
+        return g.kinds.includes(kind) || (g.label === "投资" && kind.startsWith("investment_") && kind !== "investment_property");
+      });
       const subgroups =
         g.label === "资产"
           ? (() => {
               const subgroupItems = ASSET_SUBGROUPS.map((subgroup) => {
-                const accounts = sortAccountsByUsage(filtered.filter((item) => subgroup.kinds.includes(item.kind)));
+                const accounts = sortAccountsByUsage(filtered.filter((item) => subgroup.kinds.includes(sectionKindOf(item))));
                 return {
                   key: subgroup.key,
                   label: subgroup.label,
@@ -1331,7 +1352,7 @@ export function SidebarClient({
                 };
               }).filter((subgroup) => subgroup.accounts.length > 0);
               const coveredKinds = new Set(ASSET_SUBGROUPS.flatMap((subgroup) => subgroup.kinds));
-              const fallbackAccounts = sortAccountsByUsage(filtered.filter((item) => !coveredKinds.has(item.kind)));
+              const fallbackAccounts = sortAccountsByUsage(filtered.filter((item) => !coveredKinds.has(sectionKindOf(item))));
               if (fallbackAccounts.length > 0) {
                 subgroupItems.push({
                   key: "other_asset",
@@ -1351,7 +1372,7 @@ export function SidebarClient({
         subgroups,
       };
     }).filter(s => s.accounts.length > 0);
-  }, [visibleItems, sidebarGroupBy, accountUsage, displayBalance, sumSectionBalance, t]);
+  }, [visibleItems, sidebarGroupBy, accountUsage, displayBalance, sumSectionBalance, t, moneyFundWalletsAsInvestments]);
 
   const selectedLiabilityPerson = (searchParams.get("liabilityPerson") ?? "").trim();
   const liabilityPersonKeyFor = (item: AccountItem) => item.id ? `account:${item.id}` : "";

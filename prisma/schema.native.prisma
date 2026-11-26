@@ -1470,6 +1470,9 @@ model HouseholdPreference {
   /// term        = 只按品种期限，顺延回款不加天（1 天期永远 1 天）；
   /// arrival_gap = 品种期限 + 回款日之后到下个交易日的休市天数（回款日落在周五则 +2）。
   repoOccupiedDaysMode              String          @default("actual")
+  /// 侧边栏是否把「绑定了货币基金的电子钱包」归到「投资」分组显示（默认关：
+  /// 仍留在 资产 → 电子钱包）。只影响显示位置，账户类型 / 导航目标 / 余额口径不变。
+  sidebarMoneyFundWalletsAsInvestments Boolean      @default(false)
   createdAt                         DateTime        @default(now())
   updatedAt                         DateTime        @default(now()) @updatedAt
 

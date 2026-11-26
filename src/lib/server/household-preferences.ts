@@ -64,6 +64,7 @@ export function preferenceRowData(prefs: AppPreferences) {
     accountDropdownRestrictType: prefs.accountDropdownRestrictType,
     accountUsageSortEnabled: prefs.accountUsageSortEnabled,
     repoOccupiedDaysMode: prefs.repoOccupiedDaysMode,
+    sidebarMoneyFundWalletsAsInvestments: prefs.sidebarMoneyFundWalletsAsInvestments,
   };
 }
 

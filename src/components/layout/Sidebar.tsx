@@ -161,6 +161,9 @@ async function getSidebarData() {
       creditBillGroupKey: account.kind === AccountKind.bank_credit && account.creditBillMode === "consolidated"
         ? creditBillGroupKey(account)
         : null,
+      // 绑定货币基金的电子钱包可以在侧边栏归到「投资」分组（设置 → 显示，默认关）。
+      // 只带代码、不改 kind：导航目标（钱包视图）与余额口径必须保持不变。
+      linkedFundCode: account.linkedFundCode ?? null,
     };
   });
   const conversion = await convertCurrencyAmounts({
@@ -194,6 +197,9 @@ export async function Sidebar() {
     sidebarShowAllCashEntries: cookieStore.get("sidebar_show_all_cash_entries")?.value !== "false",
     sidebarShowReimbursements: cookieStore.get("sidebar_show_reimbursements")?.value !== "false",
     sidebarMergeConsolidatedCreditCards: cookieStore.get("sidebar_merge_consolidated_credit_cards")?.value === "true",
+    sidebarMoneyFundWalletsAsInvestments:
+      cookieStore.get("sidebar_money_fund_wallets_as_investments")?.value === "true" ||
+      cookieStore.get("sidebar_money_fund_wallets_as_investments")?.value === "1",
     sidebarCollapsed: cookieStore.get("sidebar_collapsed")?.value === "true",
     sidebarGroupBy: ((): SidebarGroupMode => {
       const value = cookieStore.get("sidebar_group_by")?.value;

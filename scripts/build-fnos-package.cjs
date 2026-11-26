@@ -3715,6 +3715,17 @@ const MIGRATIONS = [
       addColumnIfMissing(db, "Account", "cardRole", "TEXT NOT NULL DEFAULT 'primary'");
     },
   },
+  {
+    // 2026-11-26 侧边栏显示位置：绑定了货币基金的电子钱包是否归入「投资」分组。
+    // 与 prisma/migrations/20261126_add_sidebar_money_fund_wallets_as_investments
+    // 及 build-win-desktop.cjs 的 applyRuntimeMigrations 同义。默认关，保持原行为。
+    version: "20261126_add_sidebar_money_fund_wallets_as_investments",
+    description: "Add HouseholdPreference.sidebarMoneyFundWalletsAsInvestments",
+    apply(db) {
+      if (!tableExists(db, "HouseholdPreference")) return;
+      addColumnIfMissing(db, "HouseholdPreference", "sidebarMoneyFundWalletsAsInvestments", "BOOLEAN NOT NULL DEFAULT 0");
+    },
+  },
 ];
 
 // 到期日「周年 − 1 天」→ 周年；返回 null 表示不是旧口径。
