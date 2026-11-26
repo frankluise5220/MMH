@@ -25,6 +25,7 @@ import {
   setCreditBillHideSettledPreference,
   setCreditBillHideZeroPreference,
 } from "@/lib/client/appPreferences";
+import { CREDIT_BILL_DETAIL_SELECTION_EVENT } from "@/lib/client/creditBillDetailSelection";
 import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
 
@@ -397,7 +398,12 @@ export function CreditBillSummaryTable({
       q.set("billPage", String(safePage));
     });
     setLocalSelectedBillMonth(month);
-    router.replace(href, { scroll: false });
+    replaceCurrentRouteUrl(href);
+    window.dispatchEvent(
+      new CustomEvent(CREDIT_BILL_DETAIL_SELECTION_EVENT, {
+        detail: { accountId, billMonth: month, href },
+      }),
+    );
   }
 
   // 手动强制重算：账单页平时只读 CreditCardCycle 缓存（记账写入时已经会重建），

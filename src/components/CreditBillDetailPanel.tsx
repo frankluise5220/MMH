@@ -13,7 +13,8 @@ import { withoutBasePath } from "@/lib/base-path";
 import { CREDIT_BILL_DETAIL_SELECTION_EVENT, type CreditBillDetailSelectionDetail } from "@/lib/client/creditBillDetailSelection";
 import { useI18n } from "@/lib/i18n";
 import { useDetailPagination } from "@/lib/client/use-detail-pagination";
-import { FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
+import { FINANCE_DATA_CHANGED_EVENT, financeChangeNeedsRowRefresh, type FinanceDataChangedDetail } from "@/lib/client/refresh";
+import { creditBillDetailCache, type CreditBillDetailData } from "@/lib/client/credit-bill-detail-cache";
 import {
   DETAIL_PAGE_SIZE_OPTIONS,
   clampDetailPage as clampPage,
@@ -23,6 +24,7 @@ import {
 } from "@/lib/detail-pagination-preference";
 
 type CreditBillDetailPanelProps = {
+  householdId: string;
   accountId: string;
   reorderAccountIds?: string[];
   /** 账单账户组（合并账单时是多张卡）；流入 / 流出按它判定，与「账单统计」同口径。 */
@@ -78,6 +80,7 @@ type CreditBillDetailPayload = {
 };
 
 export function CreditBillDetailPanel({
+  householdId,
   accountId,
   reorderAccountIds,
   billAccountIds,
@@ -102,6 +105,7 @@ export function CreditBillDetailPanel({
   const [localEntries, setLocalEntries] = useState(entries);
   const [isSwitchLoading, setIsSwitchLoading] = useState(false);
   const [clientTitle, setClientTitle] = useState(title);
+  const [clientSelectedBillMonth, setClientSelectedBillMonth] = useState(selectedBillMonth);
   const [clientScopeKey, setClientScopeKey] = useState(resetKey || `${accountId}:credit-bill-detail`);
   const propScopeKey = resetKey || `${accountId}:credit-bill-detail`;
   const scopeKey = clientScopeKey;
@@ -138,8 +142,11 @@ export function CreditBillDetailPanel({
   const { replace: replaceBillPagination } = billPager;
 
   useEffect(() => {
+    selectionFetchSeqRef.current += 1;
+    setIsSwitchLoading(false);
     setLocalEntries(entries);
     setClientTitle(title);
+    setClientSelectedBillMonth(selectedBillMonth);
     setClientScopeKey(propScopeKey);
     if (lastScopeKeyRef.current !== propScopeKey) {
       lastScopeKeyRef.current = propScopeKey;
@@ -164,16 +171,38 @@ export function CreditBillDetailPanel({
       if (!detail?.accountId || detail.accountId !== accountId) return;
       const billMonth = detail.billMonth || "all";
       const seq = ++selectionFetchSeqRef.current;
-      const params = new URLSearchParams({ accountId, billMonth });
-      setIsSwitchLoading(true);
-      fetch(`/api/v1/bill/details?${params.toString()}`, { cache: "no-store" })
-        .then(async (response) => {
-          const payload = await response.json().catch(() => null) as CreditBillDetailPayload | null;
-          if (!response.ok || !payload?.ok) {
-            throw new Error(payload?.error ?? t("basicDetail.loadFailed"));
-          }
-          if (seq !== selectionFetchSeqRef.current) return;
-          const nextEntries = Array.isArray(payload.data?.entries) ? payload.data.entries : [];
+      // The all-month server path preserves the complete ledger and shared
+      // server rendering; month switches reuse the existing table shell.
+      if (billMonth === "all") {
+        if (canRefreshCurrentRoute()) router.replace(detail.href, { scroll: false });
+        return;
+      }
+      const scope = { householdId, accountId, billMonth, accountIds: billAccountIds ?? [accountId] };
+      const cached = creditBillDetailCache.read(scope);
+      setIsSwitchLoading(!cached);
+      const request = cached
+        ? Promise.resolve(cached)
+        : creditBillDetailCache.load(scope, async () => {
+            const params = new URLSearchParams({ accountId, billMonth });
+            const response = await fetch(`/api/v1/bill/details?${params.toString()}`, { cache: "no-store" });
+            const payload = await response.json().catch(() => null) as CreditBillDetailPayload | null;
+            if (!response.ok || !payload?.ok) {
+              throw new Error(payload?.error ?? t("basicDetail.loadFailed"));
+            }
+            const data = payload.data ?? {};
+            const value: CreditBillDetailData = {
+              ...data,
+              billMonth,
+              showAllDetails: data.showAllDetails ?? billMonth === "all",
+              entries: Array.isArray(data.entries) ? data.entries : [],
+              totalCount: data.totalCount ?? 0,
+            };
+            return value;
+          });
+      request
+        .then((data) => {
+          if (!data || seq !== selectionFetchSeqRef.current) return;
+          const nextEntries = data.entries;
           const storedPreference = readStoredDetailPreference(accountId);
           const nextPageSize = storedPreference?.pageSize ?? billPager.rows;
           // Switching to a specific bill month should show that month's
@@ -183,21 +212,23 @@ export function CreditBillDetailPanel({
           const nextDetailAll = false;
           const nextTotalPages = Math.max(1, Math.ceil(nextEntries.length / nextPageSize));
           setLocalEntries(nextEntries);
+          setClientSelectedBillMonth(billMonth === "all" ? "" : billMonth);
           replaceBillPagination({
             mode: nextDetailAll ? "all" : (storedPreference?.autoFit ?? billPager.autoFit) ? "fit" : "manual",
             rows: nextPageSize,
             page: nextDetailAll ? 1 : clampPage(storedPreference?.detailPage ?? 1, nextTotalPages),
           });
           setClientScopeKey(`${accountId}:${billMonth}:credit-bill-detail`);
-          if (payload.data?.showAllDetails) {
+          if (data.showAllDetails) {
             setClientTitle(t("creditBill.allDetails"));
           } else {
-            const cycle = payload.data?.cycle;
+            const cycle = data.cycle;
             const statementMonth = cycle?.statementMonth || billMonth;
             setClientTitle(t("creditBill.detailTitleWithMonth", { month: statementMonth }));
           }
         })
         .catch((error) => {
+          if (seq !== selectionFetchSeqRef.current) return;
           console.error("Load credit bill details failed:", error);
           if (canRefreshCurrentRoute()) router.replace(detail.href, { scroll: false });
         })
@@ -206,15 +237,22 @@ export function CreditBillDetailPanel({
         });
     };
     window.addEventListener(CREDIT_BILL_DETAIL_SELECTION_EVENT, handleSelection as EventListener);
-    return () => window.removeEventListener(CREDIT_BILL_DETAIL_SELECTION_EVENT, handleSelection as EventListener);
-  }, [accountId, billPager.autoFit, billPager.rows, replaceBillPagination, router, t]);
+    return () => {
+      selectionFetchSeqRef.current += 1;
+      window.removeEventListener(CREDIT_BILL_DETAIL_SELECTION_EVENT, handleSelection as EventListener);
+    };
+  }, [householdId, accountId, billAccountIds, billPager.autoFit, billPager.rows, replaceBillPagination, router, t]);
 
   useEffect(() => {
     const handleFinanceChange = (event: Event) => {
-      const detail = (event as CustomEvent<{ reason?: string; accountIds?: string[]; deletedEntryIds?: string[] }>).detail;
+      const detail = (event as CustomEvent<FinanceDataChangedDetail>).detail ?? {};
       if (detail?.reason === "bill-override" || detail?.reason === "bill-override-reset") return;
+      if (!financeChangeNeedsRowRefresh(detail)) return;
       const accountIds = detail?.accountIds ?? [];
-      if (accountIds.length > 0 && !accountIds.includes(accountId)) return;
+      const scopeAccountIds = [accountId, ...(billAccountIds ?? [])];
+      if (accountIds.length > 0 && !scopeAccountIds.some((id) => accountIds.includes(id))) return;
+      selectionFetchSeqRef.current += 1;
+      setIsSwitchLoading(false);
       // The bill-month selector uses the browser history API for a lightweight
       // client-side switch. Refreshing through the router alone can therefore
       // use an older router URL and fall back to an empty/current bill scope.
@@ -232,17 +270,23 @@ export function CreditBillDetailPanel({
     };
     window.addEventListener(FINANCE_DATA_CHANGED_EVENT, handleFinanceChange);
     return () => window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handleFinanceChange);
-  }, [accountId, router]);
+  }, [accountId, billAccountIds, router]);
 
   const pageEntries = billPager.slice(localEntries);
 
   const showAllBillDetails = () => {
-    if (!selectedBillMonth) return;
+    if (!clientSelectedBillMonth) return;
     const url = new URL(window.location.href);
     url.searchParams.set("view", "bill");
     url.searchParams.set("billMonth", "all");
     // Same double-prefix trap as above: url.pathname comes from the address bar.
-    router.replace(withoutBasePath(`${url.pathname}${url.search}${url.hash}`), { scroll: false });
+    const href = withoutBasePath(`${url.pathname}${url.search}${url.hash}`);
+    replaceCurrentRouteUrl(href);
+    window.dispatchEvent(
+      new CustomEvent(CREDIT_BILL_DETAIL_SELECTION_EVENT, {
+        detail: { accountId, billMonth: "all", href },
+      }),
+    );
   };
 
   const tableResetKey = scopeKey;
@@ -280,9 +324,9 @@ export function CreditBillDetailPanel({
               <button
                 type="button"
                 onClick={showAllBillDetails}
-                disabled={!selectedBillMonth}
+                disabled={!clientSelectedBillMonth}
                 className={`inline-flex h-7 items-center rounded-md border px-2 text-xs ${
-                  selectedBillMonth
+                  clientSelectedBillMonth
                     ? "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
                     : "border-blue-300 bg-blue-50 text-blue-700"
                 }`}

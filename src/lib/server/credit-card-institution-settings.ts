@@ -149,7 +149,7 @@ export function creditBillGroupKey(account: {
   return `${account.householdId}|${account.institutionId}|${account.groupId}`;
 }
 
-type CreditBillAccountInput = {
+export type CreditBillAccountInput = {
   id: string;
   householdId: string;
   institutionId: string | null;
@@ -166,46 +166,81 @@ function isSupplementaryBillAccount(account: Pick<CreditBillAccountInput, "cardR
   return account.cardRole === "supplementary" || account.creditBillMode === CREDIT_BILL_MODE_SUPPLEMENTARY;
 }
 
-const CREDIT_BILL_ACCOUNT_SELECT = {
-  id: true,
-  householdId: true,
-  institutionId: true,
-  groupId: true,
-  kind: true,
-  creditBillMode: true,
-  cardRole: true,
-  primaryCardId: true,
-} as const;
+/** Build indexes once when several bill groups share the same account snapshot. */
+export function createCreditBillAccountResolver(accounts: readonly CreditBillAccountInput[]) {
+  const byId = new Map(accounts.map((row) => [row.id, row]));
+  const consolidatedByGroup = new Map<string, CreditBillAccountInput[]>();
+  const supplementaryByPrimary = new Map<string, CreditBillAccountInput[]>();
 
-/** 独立账单 / 合并账单本身的一组账户 id（不含附属卡），[0] 是账单存储账户。 */
-async function baseCreditBillAccountIds(writer: AccountWriter, account: CreditBillAccountInput) {
-  if (
-    account.kind !== AccountKind.bank_credit ||
-    account.creditBillMode !== CREDIT_BILL_MODE_CONSOLIDATED ||
-    !account.institutionId
-  ) {
-    return [account.id];
+  for (const row of accounts) {
+    if (row.kind !== AccountKind.bank_credit) continue;
+
+    if (row.creditBillMode === CREDIT_BILL_MODE_CONSOLIDATED) {
+      const groupKey = creditBillGroupKey(row);
+      if (groupKey) {
+        const peers = consolidatedByGroup.get(groupKey) ?? [];
+        peers.push(row);
+        consolidatedByGroup.set(groupKey, peers);
+      }
+    }
+    if (isSupplementaryBillAccount(row) && row.primaryCardId) {
+      const supplements = supplementaryByPrimary.get(row.primaryCardId) ?? [];
+      supplements.push(row);
+      supplementaryByPrimary.set(row.primaryCardId, supplements);
+    }
   }
-  // 合并账单 = 同机构 + 同所有人（AccountGroup）。不同家庭成员在同一家银行的
-  // 信用卡各出各的账单；groupId 缺失时按账户 id 回查一次，查不到就退回单卡，
-  // 绝不退化成「同机构全量合并」。
-  const groupId = account.groupId ?? (await writer.account.findFirst({
-    where: { id: account.id, householdId: account.householdId },
-    select: { groupId: true },
-  }))?.groupId ?? null;
-  if (!groupId) return [account.id];
-  const rows = await writer.account.findMany({
-    where: {
-      householdId: account.householdId,
-      institutionId: account.institutionId,
-      groupId,
-      kind: AccountKind.bank_credit,
-      creditBillMode: CREDIT_BILL_MODE_CONSOLIDATED,
-    },
-    select: { id: true },
-    orderBy: { id: "asc" },
-  });
-  return rows.length > 0 ? rows.map((row) => row.id) : [account.id];
+
+  for (const peers of consolidatedByGroup.values()) {
+    peers.sort((a, b) => a.id.localeCompare(b.id));
+  }
+  for (const supplements of supplementaryByPrimary.values()) {
+    supplements.sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  return (account: CreditBillAccountInput): string[] => {
+    if (!account || account.kind !== AccountKind.bank_credit) return [account.id];
+    const effectiveAccount = byId.get(account.id) ?? account;
+    let billOwner = effectiveAccount;
+
+    if (isSupplementaryBillAccount(effectiveAccount)) {
+      if (!effectiveAccount.primaryCardId || effectiveAccount.primaryCardId === effectiveAccount.id) {
+        return [effectiveAccount.id];
+      }
+      const primary = byId.get(effectiveAccount.primaryCardId);
+      if (
+        !primary ||
+        primary.householdId !== effectiveAccount.householdId ||
+        primary.kind !== AccountKind.bank_credit ||
+        isSupplementaryBillAccount(primary)
+      ) {
+        return [effectiveAccount.id];
+      }
+      billOwner = primary;
+    }
+
+    let baseAccounts = [billOwner];
+    if (
+      billOwner.creditBillMode === CREDIT_BILL_MODE_CONSOLIDATED &&
+      billOwner.institutionId &&
+      billOwner.groupId
+    ) {
+      const peers = consolidatedByGroup.get(creditBillGroupKey(billOwner) ?? "");
+      if (peers?.length) baseAccounts = peers;
+    }
+
+    const baseIds = baseAccounts.map((row) => row.id);
+    const baseIdSet = new Set(baseIds);
+    const supplementIds = new Set<string>();
+    for (const baseId of baseIds) {
+      for (const row of supplementaryByPrimary.get(baseId) ?? []) {
+        if (row.householdId === effectiveAccount.householdId && !baseIdSet.has(row.id)) {
+          supplementIds.add(row.id);
+        }
+      }
+    }
+
+    return [...baseIds, ...Array.from(supplementIds).sort((a, b) => a.localeCompare(b))];
+  };
 }
 
 /**
@@ -226,36 +261,18 @@ export async function getCreditBillAccountIds(
 ): Promise<string[]> {
   if (!account || account.kind !== AccountKind.bank_credit) return [account.id];
 
-  let billOwner: CreditBillAccountInput = account;
-  if (isSupplementaryBillAccount(account)) {
-    if (!account.primaryCardId || account.primaryCardId === account.id) return [account.id];
-    const primary = await writer.account.findFirst({
-      where: {
-        id: account.primaryCardId,
-        householdId: account.householdId,
-        kind: AccountKind.bank_credit,
-        // 不允许附属卡再挂附属卡：链路只能一层，避免成环/递归。
-        cardRole: { not: "supplementary" },
-        creditBillMode: { not: CREDIT_BILL_MODE_SUPPLEMENTARY },
-      },
-      select: CREDIT_BILL_ACCOUNT_SELECT,
-    });
-    if (!primary) return [account.id];
-    billOwner = primary;
-  }
-
-  const baseIds = await baseCreditBillAccountIds(writer, billOwner);
-  const supplements = await writer.account.findMany({
-    where: {
-      householdId: account.householdId,
-      kind: AccountKind.bank_credit,
-      OR: [{ cardRole: "supplementary" }, { creditBillMode: CREDIT_BILL_MODE_SUPPLEMENTARY }],
-      primaryCardId: { in: baseIds },
+  const accounts = await writer.account.findMany({
+    where: { householdId: account.householdId, kind: AccountKind.bank_credit },
+    select: {
+      id: true,
+      householdId: true,
+      institutionId: true,
+      groupId: true,
+      kind: true,
+      creditBillMode: true,
+      cardRole: true,
+      primaryCardId: true,
     },
-    select: { id: true },
-    orderBy: { id: "asc" },
   });
-  const supplementIds = supplements.map((row) => row.id).filter((id) => !baseIds.includes(id));
-  const result = [...baseIds, ...supplementIds];
-  return result.length > 0 ? result : [account.id];
+  return createCreditBillAccountResolver(accounts)(account);
 }

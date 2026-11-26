@@ -13,8 +13,8 @@ import {
  * （bank_credit 的 `account.balance` 恒为 0），而账单页会实时重算并写回 ——
  * 同一天、同一张卡，账单页有金额、左侧却是 ¥0.00，且要等到有人访问账单页才恢复。
  *
- * 现在删完立刻按账单口径重建，保证「记账完成」这一刻缓存就是可读的。
- * `rebuild: false` 供重建流程自己调用（它接下来就会整体重算），避免递归。
+ * Preserve cycle rows on ordinary entry changes and update their differences
+ * in place. Delete cycles only when explicitly clearing manual/import locks.
  *
  * 两类「不必重算」的精细化（2026-11-24）：
  * 1. 编辑流水只改了备注/分类/标签/往来对象 —— 账单相关字段没变，传 `billImpact`
@@ -101,12 +101,6 @@ export async function invalidateCreditCardCycleCacheForAccountIds(
   accountIds: Iterable<string | null | undefined>,
   options: {
     deleteManualCycles?: boolean;
-    rebuild?: boolean;
-    /**
-     * 编辑场景传 before/after 快照：账单相关字段完全没变时不重算。
-     * 调用方已经确定「这批更新没碰账单字段」时可直接传 "unchanged"。
-     * 新增/删除不需要传（金额必然变化）。
-     */
     billImpact?: "unchanged" | {
       before: CreditBillImpactSnapshot | null | undefined;
       after: CreditBillImpactSnapshot | null | undefined;
@@ -138,10 +132,10 @@ export async function invalidateCreditCardCycleCacheForAccountIds(
 
   // 整卡账单都被锁定（手工改账期 / 对账单导入）时，重算既不会改动任何一行、也要
   // 白算 140+ 期，直接跳过。deleteManualCycles 是显式要求清锁（改账单日规则），不跳。
-  let deletableAccountIds = billAccounts.map((account) => account.id);
+  let refreshableAccountIds = billAccounts.map((account) => account.id);
   if (!options.deleteManualCycles) {
     const lockedCycles = await prisma.creditCardCycle.findMany({
-      where: { accountId: { in: deletableAccountIds } },
+      where: { accountId: { in: refreshableAccountIds } },
       select: { accountId: true, lockSource: true },
     });
     const cyclesByAccount = new Map<string, string[]>();
@@ -150,47 +144,34 @@ export async function invalidateCreditCardCycleCacheForAccountIds(
       list.push(cycle.lockSource ?? "");
       cyclesByAccount.set(cycle.accountId, list);
     }
-    deletableAccountIds = deletableAccountIds.filter((accountId) => {
+    refreshableAccountIds = refreshableAccountIds.filter((accountId) => {
       const lockSources = cyclesByAccount.get(accountId);
       if (!lockSources || lockSources.length === 0) return true;
       return !lockSources.every((lockSource) => hasLockedCreditCardCycle(lockSource));
     });
-    if (deletableAccountIds.length === 0) return 0;
+    if (refreshableAccountIds.length === 0) return 0;
   }
 
-  const result = await prisma.creditCardCycle.deleteMany({
-    where: {
-      accountId: { in: deletableAccountIds },
-      ...(options.deleteManualCycles
-        ? {}
-        : {
-            OR: [
-              { lockSource: null },
-              {
-                AND: [
-                  { NOT: { lockSource: { contains: CREDIT_CARD_MANUAL_CYCLE_LOCK_SOURCE } } },
-                  { NOT: { lockSource: { contains: CREDIT_CARD_STATEMENT_IMPORT_CYCLE_LOCK_SOURCE } } },
-                ],
-              },
-            ],
-          }),
-    },
-  });
-
-  if (options.rebuild !== false) {
-    const accountIdsByHousehold = new Map<string, string[]>();
-    for (const account of billAccounts) {
-      if (!deletableAccountIds.includes(account.id)) continue;
-      const list = accountIdsByHousehold.get(account.householdId) ?? [];
-      list.push(account.id);
-      accountIdsByHousehold.set(account.householdId, list);
-    }
-    // 动态 import：credit-bill-page-data 静态依赖本模块，静态反向引用会成环。
-    const { refreshCreditCardCycleCachesForAccountIds } = await import("@/lib/server/credit-bill-page-data");
-    for (const [householdId, householdAccountIds] of accountIdsByHousehold) {
-      await refreshCreditCardCycleCachesForAccountIds({ householdId, accountIds: householdAccountIds }).catch(() => 0);
-    }
+  let deletedCount = 0;
+  if (options.deleteManualCycles) {
+    const result = await prisma.creditCardCycle.deleteMany({
+      where: { accountId: { in: refreshableAccountIds } },
+    });
+    deletedCount = result.count;
   }
 
-  return result.count;
+  const accountIdsByHousehold = new Map<string, string[]>();
+  for (const account of billAccounts) {
+    if (!refreshableAccountIds.includes(account.id)) continue;
+    const list = accountIdsByHousehold.get(account.householdId) ?? [];
+    list.push(account.id);
+    accountIdsByHousehold.set(account.householdId, list);
+  }
+  // Load lazily because credit-bill-page-data depends on this module.
+  const { refreshCreditCardCycleCachesForAccountIds } = await import("@/lib/server/credit-bill-page-data");
+  for (const [householdId, householdAccountIds] of accountIdsByHousehold) {
+    await refreshCreditCardCycleCachesForAccountIds({ householdId, accountIds: householdAccountIds });
+  }
+
+  return deletedCount;
 }

@@ -27,8 +27,7 @@ import {
 import { partitionCreditCycles } from "@/lib/server/credit-cycles";
 import { markInitialBillingDayRules } from "@/lib/credit/billing-day-rules";
 import { normalizeCreditCardInstallmentStatementMonths, materializeDueInstallmentPayments } from "@/lib/server/credit-card-installment";
-import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
-import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-settings";
+import { createCreditBillAccountResolver } from "@/lib/server/credit-card-institution-settings";
 import { reconcileCreditCardBillingDayRulesFromAccounts } from "@/lib/server/credit-card-billing-day-rules";
 import { buildEntryBusinessLinkSummary } from "@/lib/server/entry-business-link";
 import {
@@ -286,9 +285,8 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
           }),
         )
       : { updatedEntries: 0, updatedPlans: 0 };
-  if (normalizedCreditInstallments.updatedEntries > 0 || normalizedCreditInstallments.updatedPlans > 0) {
-    await invalidateCreditCardCycleCacheForAccountIds(billAccountIds, { rebuild: false });
-  }
+  const installmentsChanged =
+    normalizedCreditInstallments.updatedEntries > 0 || normalizedCreditInstallments.updatedPlans > 0;
 
   const isDisplayableBillMonth = (month: string) => !currentStatementMonth || month <= currentStatementMonth;
   const persistedCyclesInitial = isBillAccount && selectedAccount
@@ -417,6 +415,7 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
     (!allCyclesLocked || !!params.forceLockedCyclesRefresh) &&
     (
       forceCycleRefresh ||
+      installmentsChanged ||
       persistedCyclesInitial.length === 0 ||
       (!!currentStatementMonth && !persistedCycleByMonth.has(currentStatementMonth)) ||
       (
@@ -599,23 +598,12 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
     return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
   })();
 
-  // 「最近一笔从这张卡转出（amount > 0 的转入卡侧）」的对手账户：同样从通道派生。
-  // 原实现两次查询条件完全一致，这里合并成一次内存遍历，结果同源。
-  const lastRepayCounterpartyAccountId = (() => {
-    if (!isBillAccount || !selectedAccount) return undefined;
-    const idSet = new Set(billAccountIds.length > 0 ? billAccountIds : [selectedAccount.id]);
-    let latest: { date: Date; toAccountId: string | null } | null = null;
-    for (const row of entryChannel.rows) {
-      if (!row.accountId || !idSet.has(row.accountId)) continue;
-      if (row.type !== TransactionType.transfer) continue;
-      if (toNumber(row.amount) <= 0) continue;
-      if (!(row.date instanceof Date)) continue;
-      if (!latest || row.date > latest.date) {
-        latest = { date: row.date, toAccountId: row.toAccountId ?? null };
-      }
-    }
-    return latest?.toAccountId ?? undefined;
-  })();
+  // The entry channel folds this scalar while reading, without retaining a
+  // second copy of every row (including soft-deleted rows).
+  const lastRepayCounterpartyAccountId =
+    isBillAccount && selectedAccount
+      ? entryChannel.lastRepayCounterpartyAccountId ?? undefined
+      : undefined;
 
   const lastRepayToAccountId = lastRepayCounterpartyAccountId;
   const lastRepayFromAccountId = lastRepayCounterpartyAccountId;
@@ -1060,13 +1048,14 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
           // detail table) uses. Prisma cannot order by a per-type COALESCE, so
           // rows are fetched in the same three branches as
           // creditBillDateRangeWhere and merged in memory.
-          // 当日 / 当期明细：在通道的轻量全量行里筛（三分支合并 + 生效日排序 +
-          // 500 行封顶），只对最后要展示的这批 id 取精装关联。
+          // Hydrate the complete selected period; a row limit must not hide
+          // records from the client-side pagination controls.
           const cycleEntries = await entryChannel.loadCycleDetailRows({
             start,
             end: addDaysUtc(end, 1),
             sortAccountId: selectedAccount?.id ?? null,
             types: CREDIT_BILL_DETAIL_TYPES,
+            take: Math.max(1, entryChannel.activeCount),
           });
           const details: DetailEntry[] = cycleEntries.map((e) => ({
             id: e.id,
@@ -1206,6 +1195,21 @@ export async function refreshCreditCardCycleCachesForAccountIds(params: {
     },
   });
 
+  const accountSnapshot = await prisma.account.findMany({
+    where: { householdId: params.householdId, kind: AccountKind.bank_credit },
+    select: {
+      id: true,
+      householdId: true,
+      institutionId: true,
+      groupId: true,
+      kind: true,
+      creditBillMode: true,
+      cardRole: true,
+      primaryCardId: true,
+    },
+  });
+  const resolveCreditBillAccountIds = createCreditBillAccountResolver(accountSnapshot);
+
   const refreshGroups = new Map<
     string,
     {
@@ -1215,7 +1219,7 @@ export async function refreshCreditCardCycleCachesForAccountIds(params: {
     }
   >();
   for (const account of accounts) {
-    const billAccountIds = await getCreditBillAccountIds(prisma, account);
+    const billAccountIds = resolveCreditBillAccountIds(account);
     const billStorageAccountId = billAccountIds[0] ?? account.id;
     if (refreshGroups.has(billStorageAccountId)) continue;
     refreshGroups.set(billStorageAccountId, {
@@ -1230,7 +1234,6 @@ export async function refreshCreditCardCycleCachesForAccountIds(params: {
     // 全卡账单都锁定（手工改账期 / 对账单导入）且当前期已有行时，重算既改不动任何
     // 金额、又要白算 140+ 期，直接跳过；跨进新账期（当前期缺行）仍需补期。
     if (!params.forceLocked && await areCreditCardCyclesFullyLocked(group.billStorageAccountId, params.householdId)) continue;
-    await invalidateCreditCardCycleCacheForAccountIds(group.billAccountIds, { rebuild: false });
     await loadCreditBillPageData({
       householdId: params.householdId,
       selectedAccount: group.selectedAccount,

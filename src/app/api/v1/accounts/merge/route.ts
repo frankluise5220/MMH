@@ -192,7 +192,7 @@ export async function POST(req: NextRequest) {
       console.error("[accounts/merge] recalc balance failed", error);
     });
     if (keep.kind === "bank_credit") {
-      invalidateCreditCardCycleCacheForAccountIds([keepId]);
+      await invalidateCreditCardCycleCacheForAccountIds([keepId]);
     }
     revalidateAfterSettingsChange();
 

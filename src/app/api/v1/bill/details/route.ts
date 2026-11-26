@@ -18,7 +18,6 @@ import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-se
 import { reconcileCreditCardBillingDayRulesFromAccounts } from "@/lib/server/credit-card-billing-day-rules";
 import { buildEntryBusinessLinkSummary } from "@/lib/server/entry-business-link";
 import {
-  CREDIT_BILL_DETAIL_TAKE,
   CREDIT_BILL_DETAIL_TYPES,
   creditBillScopeKey,
   filterCreditBillCycleRows,
@@ -243,9 +242,8 @@ export async function GET(req: Request) {
       return NextResponse.json({ ok: false, code: "BILL_CYCLE_NOT_FOUND", error: "Bill cycle not found." }, { status: 404 });
     }
 
-    // 与 RSC 账单页共用同一个读取通道（`credit-bill-entry-channel`）：整卡轻量行
-    // 只读一次，按账期在内存里筛；只有最终返回的 ≤500 行才补精装关联。
-    // 排序口径不变：按生效日（支出/收入取记账日，缺失回退交易日期）倒序，500 行封顶。
+    // Share the RSC entry channel and hydrate only the selected period's rows.
+    // A period is complete even when it contains more than 500 records.
     const channel = await loadCreditBillEntryChannel(householdId, creditBillScopeKey(billAccountIds));
     const cycleQuery = {
       start: cycle?.start ?? null,
@@ -257,7 +255,7 @@ export async function GET(req: Request) {
     const totalCount = filterCreditBillCycleRows(channel.activeRows, cycleQuery).length;
     const rows = await channel.loadCycleDetailRows({
       ...cycleQuery,
-      take: CREDIT_BILL_DETAIL_TAKE,
+      take: Math.max(1, totalCount),
     });
 
     const details = rows.map((row) => mapDetailEntry(row, billAccountIdSet));

@@ -12,6 +12,7 @@ import { detectStatementBankName, isRuralBankName } from "../src/lib/statement/c
 import { extractStatementOwnerName } from "../src/lib/statement/statement-owner-name";
 import { parseImportPaymentCardAccount, resolveImportAccountFromList } from "../src/lib/account-import-match";
 import {
+  createCreditBillAccountResolver,
   getCreditBillAccountIds,
   normalizeAccountCardRole,
   normalizeCreditBillMode,
@@ -150,16 +151,25 @@ const billIds = async (rows: BillRow[], id: string) => {
   const row = rows.find((item) => item.id === id) as Parameters<typeof getCreditBillAccountIds>[1];
   return (await getCreditBillAccountIds(mockBillWriter(rows), row)).join(",");
 };
+const snapshotBillIds = (rows: BillRow[], id: string) => {
+  const row = rows.find((item) => item.id === id) as Parameters<typeof getCreditBillAccountIds>[1];
+  return createCreditBillAccountResolver(
+    rows as Parameters<typeof createCreditBillAccountResolver>[0],
+  )(row).join(",");
+};
 
 void (async () => {
   const separateOnly = [credit("solo", "separate")];
   check("独立账单仍只有自己", await billIds(separateOnly, "solo"), "solo");
+  check("Snapshot resolves a separate bill", snapshotBillIds(separateOnly, "solo"), "solo");
 
   const consolidated = [credit("a", "consolidated"), credit("b", "consolidated")];
   check("合并账单组不受影响", await billIds(consolidated, "b"), "a,b");
+  check("Snapshot resolves consolidated bills", snapshotBillIds(consolidated, "b"), "a,b");
 
   const withSupplementary = [...consolidated, credit("s", "supplementary", "a")];
   check("附属卡并入主卡所在合并账单", await billIds(withSupplementary, "s"), "a,b,s");
+  check("Snapshot resolves supplementary and consolidated cards", snapshotBillIds(withSupplementary, "s"), "a,b,s");
   check("主卡账单包含其附属卡", await billIds(withSupplementary, "a"), "a,b,s");
   check("合并组另一张卡也看到同一份账单", await billIds(withSupplementary, "b"), "a,b,s");
 
@@ -177,6 +187,7 @@ void (async () => {
   check("主卡侧也含附属卡", await billIds(separatePrimary, "m"), "m,x");
 
   check("主卡缺失退化为单卡", await billIds([credit("orphan", "supplementary", "missing")], "orphan"), "orphan");
+  check("Snapshot falls back when primary is missing", snapshotBillIds([credit("orphan", "supplementary", "missing")], "orphan"), "orphan");
   check("附属卡不可再挂附属卡", await billIds([
     credit("s1", "supplementary", "s2"),
     credit("s2", "supplementary", "s1"),
@@ -185,6 +196,25 @@ void (async () => {
     { ...credit("main", "separate"), householdId: "h2" },
     credit("cross", "supplementary", "main"),
   ], "cross"), "cross");
+  check("Snapshot rejects a primary from another household", snapshotBillIds([
+    { ...credit("main", "separate"), householdId: "h2" },
+    credit("cross", "supplementary", "main"),
+  ], "cross"), "cross");
+  check("Snapshot keeps household groups isolated", snapshotBillIds([
+    credit("h1-card", "consolidated"),
+    { ...credit("h2-card", "consolidated"), householdId: "h2" },
+  ], "h1-card"), "h1-card");
+
+  const batchedSnapshot = [
+    credit("batch-main-a", "consolidated"),
+    credit("batch-main-b", "consolidated"),
+    credit("batch-sub", "supplementary", "batch-main-a"),
+  ];
+  const resolveBatch = createCreditBillAccountResolver(
+    batchedSnapshot as Parameters<typeof createCreditBillAccountResolver>[0],
+  );
+  check("Snapshot resolver can be reused for a primary", resolveBatch(batchedSnapshot[0] as never).join(","), "batch-main-a,batch-main-b,batch-sub");
+  check("Snapshot resolver can be reused for a supplementary card", resolveBatch(batchedSnapshot[2] as never).join(","), "batch-main-a,batch-main-b,batch-sub");
 
   if (failures > 0) {
     console.error(`\n${failures} 个用例失败`);

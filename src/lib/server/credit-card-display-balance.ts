@@ -21,7 +21,10 @@ import { AccountKind } from "@prisma/client";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import { toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
-import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-settings";
+import {
+  createCreditBillAccountResolver,
+  type CreditBillAccountInput,
+} from "@/lib/server/credit-card-institution-settings";
 
 export const CREDIT_CARD_CYCLE_BALANCE_SELECT = {
   accountId: true,
@@ -112,13 +115,32 @@ export async function loadCreditCardBillGroupBalances(
     },
   });
 
-  // 账单组统一由 getCreditBillAccountIds 判定（独立 / 合并 / 附属卡），
-  // 与账单页、导入落账共用同一份口径：附属卡的余额跟着主卡走，
-  // 汇总时按同一个 storageId 去重，不会把一份账单算成两张卡。
+  const householdIds = Array.from(new Set(accounts.map((account) => account.householdId)));
+  const accountSnapshot = householdIds.length > 0
+    ? await prisma.account.findMany({
+        where: { householdId: { in: householdIds }, kind: AccountKind.bank_credit },
+        select: {
+          id: true,
+          householdId: true,
+          institutionId: true,
+          groupId: true,
+          kind: true,
+          creditBillMode: true,
+          cardRole: true,
+          primaryCardId: true,
+        },
+      })
+    : [];
+  const snapshotById = new Map(accountSnapshot.map((account) => [account.id, account]));
+  const resolveCreditBillAccountIds = createCreditBillAccountResolver(accountSnapshot);
+
+  // Resolve every requested card from one bounded household card snapshot;
+  // do not issue primary/group/supplementary lookups once per card.
   const groupByAccountId = new Map<string, { storageId: string; memberIds: string[] }>();
   for (const account of accounts) {
     if (account.kind !== AccountKind.bank_credit) continue;
-    const memberIds = await getCreditBillAccountIds(prisma, account);
+    const snapshotAccount = snapshotById.get(account.id) ?? account;
+    const memberIds = resolveCreditBillAccountIds(snapshotAccount as CreditBillAccountInput);
     groupByAccountId.set(account.id, { storageId: memberIds[0] ?? account.id, memberIds });
   }
 

@@ -5,6 +5,7 @@ import { Prisma, TransactionType } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
 import { compareDetailEntriesDesc } from "@/lib/detail-entry-order";
+import { summarizeCreditBillEntryRows } from "@/lib/credit/credit-bill-entry-summary";
 import { entryBusinessLinkSummaryInclude } from "@/lib/server/entry-business-link";
 import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
 
@@ -15,12 +16,12 @@ import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
  * 周期失效判定、`page.tsx` 的 all 模式，共 6~7 次命中同一批卡流水，彼此不共享
  * 任何缓存。这里收敛成「两段、共两次」读取：
  *
- * 1. **轻量全量**（`rows` / `activeRows`）：只取派生所需的标量列，不带任何关联。
- *    月份列表、当期筛选、还款汇总、周期失效判定、stale 判定、计数全部在内存里
- *    从这一份派生 —— 同一次渲染只读一次库。
+ * 1. Read scalar calculation fields without relations. Keep active rows plus
+ *    derived metadata; soft-deleted rows only advance the invalidation marker.
  * 2. **精装子集**（`loadDetailRows` / `loadCycleDetailRows`）：标签 / 附件 / 业务
  *    关联 / 账户这些 5 组 `include` 只对**真正要展示的行**取（单月通常几十行，
- *    all 模式才是全量）。同一批 id 只补一次，结果在通道内复用。
+ *    all mode hydrates the full result). Request-local reuse retains at most
+ *    1,000 hydrated rows, without truncating the returned result.
  *
  * 其余约定：
  * - 用 React `cache()` 做请求内去重 —— `page.tsx` 与 `buildCreditBillPageData`
@@ -32,11 +33,9 @@ import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
  */
 export const CREDIT_BILL_DETAIL_TAKE = 500;
 
-/** 安全阀：单卡账单全量行的硬上限，防止异常账簿把内存打爆。 */
-export const CREDIT_BILL_ENTRY_ROW_LIMIT = 50000;
-
 /** 精装明细按 id 批量取的块大小（避免单个 `IN (...)` 撞绑定参数上限）。 */
 const DETAIL_FETCH_CHUNK = 1000;
+const DETAIL_CACHE_MAX_ROWS = 1000;
 
 /** 账单明细口径的交易类型（与 `/api/v1/bill/details` 的历史口径一致）。 */
 export const CREDIT_BILL_DETAIL_TYPES = [
@@ -114,31 +113,25 @@ export type CreditBillCycleQuery = {
 };
 
 export type CreditBillEntryChannel = {
-  /** 含软删行的全部流水（已按 `date desc, createdAt desc` 排序）。 */
-  rows: CreditBillEntryRow[];
   /** 未删除行：明细、月份、计数用这一份。 */
   activeRows: CreditBillEntryRow[];
   /** 含软删行的最新 `updatedAt`：周期缓存 stale 判定的唯一依据。 */
   latestAnyUpdatedAt: Date | null;
   /** 未删除行数。 */
   activeCount: number;
-  /** id → 轻量行。 */
-  byId: Map<string, CreditBillEntryRow>;
-  /**
-   * 精装指定 id 的明细行（标签 / 附件 / 业务关联 / 账户）。
-   * 只补齐缺失的 id，一次 SQL；返回顺序与入参一致。
-   */
+  /** Counterparty of the latest outgoing card transfer, derived while scanning. */
+  lastRepayCounterpartyAccountId: string | null;
+  /** Hydrate IDs in bounded queries and preserve the requested order. */
   loadDetailRows(ids: readonly string[]): Promise<CreditBillDetailRow[]>;
   /** 一期账单的明细行：筛选 → 生效日排序 → 截断 → 精装（只精装最后要展示的行）。 */
   loadCycleDetailRows(query?: CreditBillCycleQuery): Promise<CreditBillDetailRow[]>;
 };
 
 export const EMPTY_CREDIT_BILL_ENTRY_CHANNEL: CreditBillEntryChannel = {
-  rows: [],
   activeRows: [],
   latestAnyUpdatedAt: null,
   activeCount: 0,
-  byId: new Map(),
+  lastRepayCounterpartyAccountId: null,
   loadDetailRows: async () => [],
   loadCycleDetailRows: async () => [],
 };
@@ -151,19 +144,16 @@ export function creditBillScopeKey(accountIds: readonly string[]): string {
   return [...new Set(accountIds)].sort().join(",");
 }
 
-function buildChannel(householdId: string, rows: CreditBillEntryRow[]): CreditBillEntryChannel {
-  const activeRows: CreditBillEntryRow[] = [];
-  const byId = new Map<string, CreditBillEntryRow>();
-  let latestAnyUpdatedAt: Date | null = null;
-  for (const row of rows) {
-    byId.set(row.id, row);
-    const updatedAt = row.updatedAt instanceof Date ? row.updatedAt : null;
-    if (updatedAt && (!latestAnyUpdatedAt || updatedAt > latestAnyUpdatedAt)) {
-      latestAnyUpdatedAt = updatedAt;
-    }
-    if (!row.deletedAt) activeRows.push(row);
-  }
+function buildChannel(
+  householdId: string,
+  accountIds: ReadonlySet<string>,
+  rows: CreditBillEntryRow[],
+): CreditBillEntryChannel {
+  const { activeRows, latestAnyUpdatedAt, lastRepayCounterpartyAccountId } =
+    summarizeCreditBillEntryRows(rows, accountIds);
 
+  // Keep a small request-local detail cache. Large explicit reads still return
+  // every requested row, but do not pin the whole ledger in a second structure.
   const detailById = new Map<string, CreditBillDetailRow>();
   // 串行化：并发请求不同批次时后一批会等前一批落库再补，避免同一批 id 查两遍。
   let queue: Promise<void> = Promise.resolve();
@@ -171,7 +161,15 @@ function buildChannel(householdId: string, rows: CreditBillEntryRow[]): CreditBi
   const loadDetailRows = (ids: readonly string[]): Promise<CreditBillDetailRow[]> => {
     const unique = [...new Set(ids)];
     const run = queue.then(async () => {
-      const missing = unique.filter((id) => !detailById.has(id));
+      const resolved = new Map<string, CreditBillDetailRow>();
+      for (const id of unique) {
+        const cached = detailById.get(id);
+        if (!cached) continue;
+        detailById.delete(id);
+        detailById.set(id, cached);
+        resolved.set(id, cached);
+      }
+      const missing = unique.filter((id) => !resolved.has(id));
       // 分块：all 模式可能一次要几万个 id，单个 `IN (...)` 会撞上 PostgreSQL 的
       // 绑定参数上限。
       for (let index = 0; index < missing.length; index += DETAIL_FETCH_CHUNK) {
@@ -180,26 +178,33 @@ function buildChannel(householdId: string, rows: CreditBillEntryRow[]): CreditBi
           where: { id: { in: chunk }, householdId },
           include: creditBillEntryInclude,
         });
-        for (const row of fetched) detailById.set(row.id, row);
+        for (const row of fetched) {
+          resolved.set(row.id, row);
+          detailById.delete(row.id);
+          detailById.set(row.id, row);
+          while (detailById.size > DETAIL_CACHE_MAX_ROWS) {
+            const oldest = detailById.keys().next().value;
+            if (oldest === undefined) break;
+            detailById.delete(oldest);
+          }
+        }
       }
+      return unique
+        .map((id) => resolved.get(id))
+        .filter((row): row is CreditBillDetailRow => !!row);
     });
     queue = run.then(
       () => undefined,
       () => undefined,
     );
-    return run.then(() =>
-      unique
-        .map((id) => detailById.get(id))
-        .filter((row): row is CreditBillDetailRow => !!row),
-    );
+    return run;
   };
 
   return {
-    rows,
     activeRows,
     latestAnyUpdatedAt,
     activeCount: activeRows.length,
-    byId,
+    lastRepayCounterpartyAccountId,
     loadDetailRows,
     loadCycleDetailRows: async (query = {}) => {
       const picked = selectCreditBillCycleRows(activeRows, query);
@@ -224,10 +229,9 @@ export const loadCreditBillEntryChannel = cache(
       },
       ...creditBillEntrySelectArgs,
       orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-      take: CREDIT_BILL_ENTRY_ROW_LIMIT,
     });
 
-    return buildChannel(householdId, rows);
+    return buildChannel(householdId, new Set(accountIds), rows);
   },
 );
 

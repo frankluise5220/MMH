@@ -3805,6 +3805,7 @@ export default async function Home({
                   )}
 
                   <CreditBillDetailPanel
+                    householdId={householdId}
                     accountId={selectedAccount?.id ?? ""}
                     reorderAccountIds={billAccountIds}
                     billAccountIds={billAccountIds}
