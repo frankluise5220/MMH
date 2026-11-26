@@ -32,6 +32,7 @@ import { ResizableVerticalSplit } from "@/components/ResizableVerticalSplit";
 import { StockFeeRuleSettingsButton } from "@/components/StockFeeRuleSettingsButton";
 import {
   AdvancedDataTable,
+  AdvancedDataTableSelectionBadge,
   ROW_ACTION_BUTTON_BOX_CLASS,
   type AdvancedDataTableColumn,
 } from "@/components/AdvancedDataTable";
@@ -1705,9 +1706,10 @@ export function StockHoldingsPanel({
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
-                    <span className="shrink-0 text-xs font-medium tabular-nums text-blue-700">
-                      {t("detail.selectedCount", { count: batchTargetIds.length })}
-                    </span>
+                    <AdvancedDataTableSelectionBadge
+                      count={batchTargetIds.length}
+                      onClear={() => setSelectedIds(new Set())}
+                    />
                     <span className="mx-1 h-4 w-px bg-slate-200" />
                   </div>
                 ) : null}

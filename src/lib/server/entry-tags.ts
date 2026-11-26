@@ -113,3 +113,30 @@ export async function replaceEntryTags(input: {
   await input.tx.entryTag.deleteMany({ where: { entryId: input.entryId } });
   await attachEntryTags(input);
 }
+
+/**
+ * 给「交易表 + 资金腿」拼出来的明细行补上标签。
+ *
+ * 基金 / 理财明细的 id 取的是资金腿（cashEntryId），标签存在 TxRecord 的 EntryTag 上，
+ * 交易表本身没有标签列；不补这一步，明细表的「标签」列永远是 “-”，
+ * 批量修改里加完标签也看不到结果。没有资金腿的业务行（id 就是交易表 id）
+ * 天然挂不了标签，查不到时给空数组，与「无标签」同义。
+ */
+export async function attachEntryTagsToRows<T extends { id?: unknown }>(rows: T[]) {
+  const ids = Array.from(new Set(rows.map((row) => String(row.id ?? "")).filter(Boolean)));
+  const tagsByEntryId = new Map<string, Array<{ entryId: string; tagId: string; Tag: { id: string; name: string; color: string | null } }>>();
+  if (ids.length > 0) {
+    const links = await prisma.entryTag.findMany({
+      where: { entryId: { in: ids } },
+      select: { entryId: true, tagId: true, Tag: { select: { id: true, name: true, color: true } } },
+    });
+    for (const link of links) {
+      const list = tagsByEntryId.get(link.entryId) ?? [];
+      list.push(link);
+      tagsByEntryId.set(link.entryId, list);
+    }
+  }
+  for (const row of rows) {
+    (row as Record<string, unknown>).entryTags = tagsByEntryId.get(String(row.id ?? "")) ?? [];
+  }
+}

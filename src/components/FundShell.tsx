@@ -30,8 +30,6 @@ import { useIsMobileDevice } from "@/components/DeviceKindProvider";
 
 import { ChartLine, Library, List, Package, Pencil, Settings2, SlidersHorizontal, Trash2, X } from "lucide-react";
 
-import { EntryCategoryFilter } from "@/components/EntryCategoryFilter";
-import { ENTRY_CATEGORY_VALUES, matchesEntryCategories, type EntryCategory } from "@/lib/entry-categories";
 
 import { FundProfileSettingsModal } from "@/components/FundProfileSettingsModal";
 import { openMetalExtract } from "@/lib/client/metal-extract-event";
@@ -46,7 +44,8 @@ import { DepositFormModal } from "@/components/DepositFormModal";
 import { FillNavButton } from "@/components/FillNavButton";
 import { FundUnitsReconcileButton } from "@/components/FundUnitsReconcileButton";
 
-import { BatchReplacePopoverButton, type BatchReplaceFieldConfig } from "@/components/BatchReplacePopoverButton";
+import { BatchReplacePopoverButton, type BatchReplaceFieldConfig, type BatchReplaceOption } from "@/components/BatchReplacePopoverButton";
+import { BATCH_ACCOUNT_SELECT_BEHAVIOR, BATCH_TAG_SELECT_BEHAVIOR, toBatchAccountOptions } from "@/lib/batch-account-options";
 
 import { ProductLibraryModal } from "@/components/ProductLibraryModal";
 
@@ -64,7 +63,7 @@ import { RebuildMoneyIncomeButton } from "@/components/RebuildMoneyIncomeButton"
 
 import { AddNavButton } from "@/components/AddNavButton";
 
-import { AdvancedDataTable, ROW_ACTION_BUTTON_BOX_CLASS, type AdvancedDataTableColumn, type AdvancedDataTableSummaryRow } from "@/components/AdvancedDataTable";
+import { AdvancedDataTable, AdvancedDataTableSelectionBadge, ROW_ACTION_BUTTON_BOX_CLASS, type AdvancedDataTableColumn, type AdvancedDataTableSummaryRow } from "@/components/AdvancedDataTable";
 import { HANDSET_HIDDEN_CLASS, ViewExcelImportMenuButton, exportRowsToXlsx } from "@/components/ViewExcelImportMenuButton";
 import { DetailTablePaginationControls } from "@/components/DetailTablePaginationControls";
 
@@ -743,7 +742,7 @@ export function FundShell(props: Props) {
     accountId, selectedAccount, accountOptions,
 
     cashAccounts, investmentAccounts, cashAccountSSOptions, investmentAccountSSOptions, metalTypes, metalUnits, nestedFieldData, createAction, editAction,
-    propertyAccounts, extractAction,
+    propertyAccounts, extractAction, tagOptions,
 
     fillNavAction, isRedUp,
     fundUnitsDecimals: fundUnitsDecimalsProp,
@@ -813,6 +812,14 @@ export function FundShell(props: Props) {
         (!wanted || !account.investProductType || account.investProductType === wanted),
     );
   }, [investmentAccounts, isMoneyAccount]);
+  const cashBatchAccountOptions = useMemo<BatchReplaceOption[]>(() => {
+    const allowedIds = new Set<string>((cashAccounts as any[]).map((account: any) => String(account.id)));
+    return toBatchAccountOptions(cashAccountSSOptions as any[], cashAccounts as any[], allowedIds);
+  }, [cashAccountSSOptions, cashAccounts]);
+  const fundBatchAccountOptions = useMemo<BatchReplaceOption[]>(() => {
+    const allowedIds = new Set<string>(fundAccountOptions.map((account: any) => String(account.id)));
+    return toBatchAccountOptions(investmentAccountSSOptions as any[], fundAccountOptions, allowedIds);
+  }, [investmentAccountSSOptions, fundAccountOptions]);
   const detailNameLabel = isMetalAccount
     ? t("fundShell.col.species")
     : isWealthAccount
@@ -945,10 +952,6 @@ export function FundShell(props: Props) {
   );
   const { isReconciled } = useEntryReconcileState(detailReconcileIds);
 
-  // 明细「交易类型」筛选：默认全部（含收益）。货基的每日万份收益结转、基金分红都是
-  // 真实入账的收益流水，默认藏起来会让人以为「收益只在赎回时才落账」；嫌条数多可以
-  // 在「交易类型」下拉里取消「收益」。
-  const [detailCategories, setDetailCategories] = useState<EntryCategory[]>(() => [...ENTRY_CATEGORY_VALUES]);
   useEffect(() => {
     isReconciledRef.current = isReconciled;
   }, [isReconciled]);
@@ -1071,7 +1074,7 @@ export function FundShell(props: Props) {
 
 
 
-  type FundBatchField = "cashAccountId" | "fundAccountId" | "amount" | "fundFee" | "feeRate" | "fundConfirmDate" | "fundArrivalDate" | "remark";
+  type FundBatchField = "cashAccountId" | "fundAccountId" | "amount" | "fundFee" | "feeRate" | "fundConfirmDate" | "fundArrivalDate" | "tagId" | "appendTagId" | "remark";
 
 
 
@@ -1149,6 +1152,9 @@ export function FundShell(props: Props) {
    */
   const showRemainingUnitsDetailColumn = isMoneyAccount || (isWealthAccount && !isAllWealthDetailScope);
   const hideRemainingUnitsDetailColumn = !showRemainingUnitsDetailColumn;
+  // 勾选后工具栏要多放「清除选择 / 流入流出合计」，这一行塞不下时先让重复的「基金名称」列退场
+  // （单基金范围本来就已隐藏），取消勾选立刻恢复。
+  const hideFundColumnOnSelection = !isSingleNormalFundScope && selectedIds.size > 0;
   const visiblePositionCols = useMemo(
     () => positionCols.filter(([key]) => !hiddenPositionColumns.has(key as PositionColumnKey)),
     [hiddenPositionColumns, positionCols],
@@ -1158,10 +1164,10 @@ export function FundShell(props: Props) {
     () => DETAIL_COLS.filter(([key]) =>
       !(isWealthAccount && key === "status") &&
       !(hideRemainingUnitsDetailColumn && key === "remainingUnits") &&
-      !(isSingleNormalFundScope && key === "fund") &&
+      !((isSingleNormalFundScope || hideFundColumnOnSelection) && key === "fund") &&
       !hiddenDetailColumns.has(key)
     ),
-    [hiddenDetailColumns, hideRemainingUnitsDetailColumn, isSingleNormalFundScope, isWealthAccount],
+    [hiddenDetailColumns, hideFundColumnOnSelection, hideRemainingUnitsDetailColumn, isSingleNormalFundScope, isWealthAccount],
   );
   const visibleDetailDataCols = useMemo(
     () => visibleDetailCols.filter(([key]) => !FIXED_DETAIL_COLUMNS.has(key)),
@@ -1176,9 +1182,9 @@ export function FundShell(props: Props) {
     (key: DetailColumnKey) =>
       !(isWealthAccount && key === "status") &&
       !(hideRemainingUnitsDetailColumn && key === "remainingUnits") &&
-      !(isSingleNormalFundScope && key === "fund") &&
+      !((isSingleNormalFundScope || hideFundColumnOnSelection) && key === "fund") &&
       !hiddenDetailColumns.has(key),
-    [hiddenDetailColumns, hideRemainingUnitsDetailColumn, isSingleNormalFundScope, isWealthAccount],
+    [hiddenDetailColumns, hideFundColumnOnSelection, hideRemainingUnitsDetailColumn, isSingleNormalFundScope, isWealthAccount],
   );
 
   const toggleDetailColumnVisibility = useCallback((key: DetailColumnKey) => {
@@ -1725,7 +1731,6 @@ export function FundShell(props: Props) {
         ? d.allEntries.filter((e: any) => entryAssetKey(e) === fundCode)
         : isWealthAccount ? d.allEntries ?? [] : [];
     return source
-      .filter((e: any) => matchesEntryCategories(e, detailCategories))
       .sort((a: any, b: any) => {
         const byApplyDate = fundApplyDateOf(b).localeCompare(fundApplyDateOf(a));
         if (byApplyDate !== 0) return byApplyDate;
@@ -1733,7 +1738,7 @@ export function FundShell(props: Props) {
         if (byCreatedAt !== 0) return byCreatedAt;
         return String(b.id ?? "").localeCompare(String(a.id ?? ""));
       });
-  }, [d.allEntries, detailCategories, entryAssetKey, fundApplyDateOf, fundCode, isWealthAccount, showAllRecords]);
+  }, [d.allEntries, entryAssetKey, fundApplyDateOf, fundCode, isWealthAccount, showAllRecords]);
   const filteredAssetKeysById = useMemo(() => {
     const keysById = new Map<string, string | string[]>();
     for (const entry of filtered as any[]) {
@@ -2540,6 +2545,47 @@ export function FundShell(props: Props) {
 
   const batchTargetIds = useMemo(() => Array.from(selectedIds).filter((id) => filteredByColumnsIdSet.has(id)), [selectedIds, filteredByColumnsIdSet]);
 
+  /**
+   * 基金明细行的现金方向（与明细「金额」列的符号无关：申购金额是正数但钱是出去的）：
+   * 正 = 进本账户（赎回 / 分红 / 申购退款 / 货基收益），负 = 出（申购 / 定投 / 转换入）。
+   */
+  const detailCashFlowOf = useCallback((entry: any): number => {
+    if (isFundUnitsReconcileEntry(entry)) return 0;
+    const amount = Math.abs(toNumber(detailAmountOf(entry)));
+    const subtype = String(entry?.fundSubtype ?? "");
+    if (subtype === "buy" || subtype === "regular_invest" || subtype === "switch_in") return -amount;
+    if (
+      subtype === "redeem" ||
+      subtype === "switch_out" ||
+      subtype === "dividend_cash" ||
+      subtype === "dividend" ||
+      subtype === "buy_failed" ||
+      subtype === "write_off"
+    ) {
+      return amount;
+    }
+    // 红利再投、基金转换不过现金账户，不能进合计。
+    if (subtype === "dividend_reinvest" || subtype === "switch") return 0;
+    if (entry?.source === TRANSACTION_SOURCE_MONEY_INCOME) return amount;
+    if (entry?.source === "dividend" || entry?.source === "regular_invest_refund") return amount;
+    // 贵金属等按金额符号兜底（正 = 流入）。
+    return toNumber(detailAmountOf(entry));
+  }, [detailAmountOf]);
+
+  /** 勾选行的流入 / 流出合计（普通交易明细同款读数，按基金口径判方向）。 */
+  const selectedDetailFlow = useMemo(() => {
+    let inflow = 0;
+    let outflow = 0;
+    if (selectedIds.size === 0) return { inflow, outflow };
+    for (const entry of filteredByColumns) {
+      if (!selectedIds.has(String(entry?.id ?? ""))) continue;
+      const signed = detailCashFlowOf(entry);
+      if (signed > 0) inflow += signed;
+      else if (signed < 0) outflow += -signed;
+    }
+    return { inflow: Math.round(inflow * 100) / 100, outflow: Math.round(outflow * 100) / 100 };
+  }, [detailCashFlowOf, filteredByColumns, selectedIds]);
+
 
   useEffect(() => {
     setDetailTableRowCount(filteredByColumns.length);
@@ -2586,27 +2632,21 @@ export function FundShell(props: Props) {
   const batchFields = useMemo<BatchReplaceFieldConfig<FundBatchField>[]>(() => [
 
     {
-
       value: "cashAccountId",
-
       label: t("txForm.cashAccount"),
-
-      kind: "select",
-
-      options: [{ value: "", label: t("fundShell.selectAccount") }, ...cashAccounts.map((a: any) => ({ value: a.id, label: a.label }))],
-
+      kind: "smartSelect",
+      options: cashBatchAccountOptions,
+      placeholder: t("fundShell.selectAccount"),
+      smartSelectBehavior: BATCH_ACCOUNT_SELECT_BEHAVIOR,
     },
 
     {
-
       value: "fundAccountId",
-
       label: investmentAccountLabel,
-
-      kind: "select",
-
-      options: [{ value: "", label: t("fundShell.selectAccount") }, ...fundAccountOptions.map((a: any) => ({ value: a.id, label: a.label }))],
-
+      kind: "smartSelect",
+      options: fundBatchAccountOptions,
+      placeholder: t("fundShell.selectAccount"),
+      smartSelectBehavior: BATCH_ACCOUNT_SELECT_BEHAVIOR,
     },
 
     { value: "amount", label: t("txForm.amount"), kind: "number", placeholder: t("fundShell.batch.amountPlaceholder") },
@@ -2633,9 +2673,33 @@ export function FundShell(props: Props) {
       precision: 0,
     },
 
-    { value: "remark", label: t("detail.column.remark"), kind: "text", placeholder: t("stockPanel.batchNotePlaceholder"), allowEmpty: true },
+    {
+      value: "tagId",
+      label: t("detail.column.tags"),
+      kind: "smartSelect",
+      options: [{ value: "", label: t("basicDetailSelection.clearTag") }, ...(tagOptions ?? [])],
+      allowEmpty: true,
+      smartSelectBehavior: BATCH_TAG_SELECT_BEHAVIOR,
+    },
 
-  ], [cashAccounts, fundAccountOptions, investmentAccountLabel, t]);
+    {
+      value: "appendTagId",
+      label: t("basicDetailSelection.appendTag"),
+      kind: "smartSelect",
+      options: [{ value: "", label: t("txForm.selectPlaceholder") }, ...(tagOptions ?? [])],
+      smartSelectBehavior: BATCH_TAG_SELECT_BEHAVIOR,
+    },
+
+    {
+      value: "remark",
+      label: t("detail.column.remark"),
+      kind: "text",
+      placeholder: t("batchReplace.remarkPlaceholder"),
+      hint: t("batchReplace.remarkHint"),
+      allowEmpty: true,
+    },
+
+  ], [cashBatchAccountOptions, fundBatchAccountOptions, investmentAccountLabel, tagOptions, t]);
 
 
 
@@ -2648,6 +2712,10 @@ export function FundShell(props: Props) {
 
 
     const updates = ids.map((id) => {
+
+      if (field === "tagId") return { id, tagId: value };
+
+      if (field === "appendTagId") return { id, appendTagId: value };
 
       if (field === "remark") return { id, remark: value };
 
@@ -3953,12 +4021,22 @@ export function FundShell(props: Props) {
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
 
-                <span
-                  className="h-6 rounded border border-blue-200 bg-blue-50 px-2 text-xs font-medium leading-6 tabular-nums text-blue-700"
+                {/* 已选徽标与「取消选择」X 由 ADT 统一提供，各表格不再各拼一套。 */}
+                <AdvancedDataTableSelectionBadge
+                  count={batchTargetIds.length}
+                  onClear={() => setSelectedIds(new Set())}
                   title={t("fundShell.selectedTitle", { count: batchTargetIds.length })}
-                >
-                  {t("table.selectedCount", { count: batchTargetIds.length })}
-                </span>
+                />
+                {selectedDetailFlow.inflow > 0 ? (
+                  <span className={`text-xs font-medium tabular-nums ${upCls}`} title={t("detail.column.inflow")}>
+                    {t("detail.column.inflow")} {formatMoney(selectedDetailFlow.inflow)}
+                  </span>
+                ) : null}
+                {selectedDetailFlow.outflow > 0 ? (
+                  <span className={`text-xs font-medium tabular-nums ${downCls}`} title={t("detail.column.outflow")}>
+                    {t("detail.column.outflow")} {formatMoney(selectedDetailFlow.outflow)}
+                  </span>
+                ) : null}
                 <span className="mx-1 h-4 w-px bg-slate-200" />
               </div>
             ) : null}
@@ -4006,11 +4084,6 @@ export function FundShell(props: Props) {
 
             {batchDeleteMessage ? <span className="px-1 text-[10px] text-rose-500">{batchDeleteMessage}</span> : null}
 
-            <EntryCategoryFilter
-              value={detailCategories}
-              onChange={setDetailCategories}
-            />
-
             <div className="relative order-last" ref={detailColumnMenuRef}>
 
               <button
@@ -4036,7 +4109,7 @@ export function FundShell(props: Props) {
                     {DETAIL_COLS.filter(([key]) =>
                       !(isWealthAccount && key === "status") &&
                       !(hideRemainingUnitsDetailColumn && key === "remainingUnits") &&
-                      !(isSingleNormalFundScope && key === "fund") &&
+                      !((isSingleNormalFundScope || hideFundColumnOnSelection) && key === "fund") &&
                       !FIXED_DETAIL_COLUMNS.has(key)
                     ).map(([key]) => {
                       const checked = isDetailColumnVisible(key);

@@ -158,7 +158,7 @@ type BasicDetailPanelProps = {
     isSettlementAccount?: boolean | null;
   }>;
   /** 批量替换账户下拉用的选项；默认与 `accountOptions` 相同。 */
-  batchReplaceAccountOptions?: Array<{ id: string; label: string; listLabel?: string | null }>;
+  batchReplaceAccountOptions?: Array<{ id: string; label: string; subLabel?: string | null; listLabel?: string | null; title?: string | null }>;
   categoryOptions?: BasicDetailBatchCategoryOption[];
   tagOptions?: BasicDetailBatchCategoryOption[];
   investmentProductTypeByAccountId: Record<string, string | undefined | null>;
@@ -1700,8 +1700,7 @@ export function BasicDetailPanel({
           // 时间筛选器在两种模式下都开：滑轨两端取全量边界（bounds=1），与当前
           // 页有多少行、以及范围/日期列筛选都无关。
           showDateRangeFilter
-          // 绑定货基的钱包：表头换成「收益」开关（默认关），其它账户保留交易类型筛选。
-          showEntryCategoryFilter={!showMoneyIncomeToggle}
+          // 绑定货基的钱包：表头换成「收益」开关（默认关）。
           showMoneyIncomeToggle={showMoneyIncomeToggle}
           showMoneyIncome={localShowMoneyIncome}
           onMoneyIncomeChange={handleMoneyIncomeChange}

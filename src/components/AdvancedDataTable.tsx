@@ -17,9 +17,10 @@ import {
   type ReactNode,
   type UIEvent as ReactUIEvent,
 } from "react";
-import { ArrowRightLeft, GripVertical, SlidersHorizontal, Trash2 } from "lucide-react";
+import { ArrowRightLeft, SlidersHorizontal, Trash2, X } from "lucide-react";
 import { DateRangeColumnFilter, NumberRangeColumnFilter, TableColumnFilter, TextColumnFilter } from "./TableColumnFilter";
 import { DateRangeSliderFilter } from "./DateRangeSliderFilter";
+import { useHint, useHintTrigger, type HintItem } from "./HintLayer";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useI18n } from "@/lib/i18n";
 import {
@@ -52,11 +53,6 @@ const ROW_LONG_PRESS_MOVE_TOLERANCE_PX = 10;
 /** 拖拽中手指贴近视口上下边缘时自动滚动，避免长列表拖不动。 */
 const ROW_DRAG_AUTO_SCROLL_MARGIN_PX = 56;
 const ROW_DRAG_AUTO_SCROLL_MAX_STEP = 22;
-/**
- * 表头列拖拽的悬浮提示时长：鼠标在表头上停留超过 300ms 才弹出「按住可拾起列」，
- * 必须早于拾起时长（400ms），否则提示还没出来列就已经能拖了。
- */
-const COLUMN_DRAG_HINT_DELAY_MS = 300;
 /**
  * 表头长按拾起一列的触发时长，与行长按拖拽（400ms）取同一档：短到不用刻意等，
  * 又长于普通点按的间隔；按住期间表头只做浅色高亮，不到点不起拖，点表头排序、
@@ -852,6 +848,13 @@ type AdvancedDataTableProps<T> = {
   toolbarLeftContent?: ReactNode;
   toolbarRightContent?: ReactNode;
   showTableStateInCustomToolbar?: boolean;
+  /**
+   * 自定义工具栏里是否自动渲染「已选 N 条」胶囊，默认 true。
+   * 页面需要把徽标钉在自己那组批量按钮右侧（而不是排在自定义内容末尾）时传 false，
+   * 并在按钮组后面自己渲染 `<AdvancedDataTableSelectionBadge />`——组件只有一份，
+   * 变的只是位置。筛选胶囊仍由 showTableStateInCustomToolbar 控制。
+   */
+  showSelectionBadgeInCustomToolbar?: boolean;
   showColumnVisibilityButton?: boolean;
   // 表格默认永远是「无排序」状态：表头不着色、不翻转，行序就是调用方传入的顺序。
   // 排序只能由用户点表头产生（并落盘记住），不要再提供「初始排序 / 默认排序」之类的入口。
@@ -1086,6 +1089,82 @@ function rowMatchesFilters<T>(
   return true;
 }
 
+export function AdvancedDataTableSelectionBadge({
+  count,
+  onClear,
+  title,
+  className = "",
+}: {
+  count: number;
+  onClear: () => void;
+  /** 默认与徽标文字一致；需要补充「跨了几页 / 包含哪些范围」时由调用方传入。 */
+  title?: string;
+  className?: string;
+}) {
+  const { t } = useI18n();
+  const text = t("table.selectedCount", { count }) as string;
+  const clearLabel = t("table.clearSelection") as string;
+  const badgeHint = useHint("advanced-table-selection-badge", [{ id: "selection", label: title ?? text, wrap: true }]);
+  const clearHint = useHint("advanced-table-clear-selection", [{ id: "clear", label: clearLabel }]);
+  return (
+    <span
+      data-advanced-table-selection-badge=""
+      className={`flex h-6 shrink-0 items-stretch overflow-hidden rounded border border-blue-200 bg-blue-50 text-xs font-medium tabular-nums text-blue-700 ${className}`}
+    >
+      <span className="flex items-center px-2" {...badgeHint}>
+        {text}
+      </span>
+      <button
+        type="button"
+        onClick={onClear}
+        data-advanced-table-clear-selection=""
+        className="flex w-6 items-center justify-center border-l border-blue-200 text-blue-600 transition-colors hover:bg-blue-100 hover:text-blue-700"
+        {...clearHint}
+        aria-label={clearLabel}
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </span>
+  );
+}
+
+export function AdvancedDataTableFilterStateBadge({
+  filteredCount,
+  totalCount,
+  onClear,
+  className = "",
+}: {
+  filteredCount: number;
+  totalCount: number;
+  onClear: () => void;
+  className?: string;
+}) {
+  const { t } = useI18n();
+  const clearLabel = t("table.clearFilters") as string;
+  const badgeHint = useHint("advanced-table-filter-badge", [{ id: "filtered", label: clearLabel, icon: "filter" }]);
+  const clearHint = useHint("advanced-table-clear-filters", [{ id: "clear", label: clearLabel }]);
+  return (
+    <span
+      data-advanced-table-filter-badge=""
+      className={`flex h-6 shrink-0 items-stretch overflow-hidden rounded border border-purple-200 bg-purple-50 text-xs font-medium tabular-nums text-purple-700 ${className}`}
+    >
+      <span className="flex items-center px-2" {...badgeHint}>
+        {filteredCount}/{totalCount}
+      </span>
+      <button
+        type="button"
+        onClick={onClear}
+        data-advanced-table-clear-filters=""
+        className="flex w-6 items-center justify-center border-l border-purple-200 text-purple-600 transition-colors hover:bg-purple-100 hover:text-purple-700"
+        {...clearHint}
+        aria-label={clearLabel}
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </span>
+  );
+}
+
 export function AdvancedDataTable<T>({
   storageKey,
   sortStorageKey: sortStorageKeyProp,
@@ -1129,6 +1208,7 @@ export function AdvancedDataTable<T>({
   toolbarLeftContent,
   toolbarRightContent,
   showTableStateInCustomToolbar = false,
+  showSelectionBadgeInCustomToolbar = true,
   showColumnVisibilityButton = true,
   sortable = true,
   filterRows,
@@ -1288,9 +1368,10 @@ export function AdvancedDataTable<T>({
   const columnPointerDragRef = useRef<PointerDragSession | null>(null);
   const columnDragGhostRef = useRef<ColumnDragGhost | null>(null);
   const columnDragClickResetRef = useRef<number | null>(null);
-  // 表头悬浮 0.5s 后出现的拖拽提示（fixed 定位的一枚小药丸）。
-  const [headerDragHint, setHeaderDragHint] = useState<{ top: number; left: number } | null>(null);
-  const headerDragHintTimerRef = useRef<number | null>(null);
+  // 表头提示（可拖拽 + 排序/筛选）走全站统一提示层；这里只负责把「每一列」的锚点和文案交给它。
+  const headerHint = useHintTrigger({ placement: "bottom" });
+  // 行内小图标（拖拽手柄、清列筛选、工具栏按钮）各自一个锚点，共用一个全局提示层。
+  const cellHint = useHintTrigger({ placement: "bottom" });
   // 拾起列松手后浏览器会在源表头补一个 click，屏蔽掉，别顺手触发排序。
   const suppressHeaderSortClickRef = useRef(false);
   const suppressNextClickRef = useRef(false);
@@ -2593,28 +2674,6 @@ export function AdvancedDataTable<T>({
     writeJson(columnOrderStorageKey, next);
   }, [columnOrderStorageKey]);
 
-  const clearHeaderDragHint = useCallback(() => {
-    if (headerDragHintTimerRef.current != null) {
-      window.clearTimeout(headerDragHintTimerRef.current);
-      headerDragHintTimerRef.current = null;
-    }
-    setHeaderDragHint((prev) => (prev ? null : prev));
-  }, []);
-
-  /** 鼠标在表头停留超过 0.5s：弹出「按住可拾起列」的拖拽提示，锚定在该列表头下方。 */
-  const scheduleHeaderDragHint = useCallback((element: HTMLElement) => {
-    clearHeaderDragHint();
-    headerDragHintTimerRef.current = window.setTimeout(() => {
-      headerDragHintTimerRef.current = null;
-      const rect = element.getBoundingClientRect();
-      // 表头可能已经随横向滚动移出可视区，量不到就不显示。
-      if (rect.width === 0 || rect.height === 0) return;
-      const centerX = rect.left + rect.width / 2;
-      const left = Math.min(Math.max(centerX, 90), Math.max(90, window.innerWidth - 90));
-      setHeaderDragHint({ top: rect.bottom + 6, left });
-    }, COLUMN_DRAG_HINT_DELAY_MS);
-  }, [clearHeaderDragHint]);
-
   const clearPendingColumnLongPress = useCallback(() => {
     const pending = columnLongPressRef.current;
     if (pending?.timer != null) window.clearTimeout(pending.timer);
@@ -2650,7 +2709,6 @@ export function AdvancedDataTable<T>({
     setPointerColumnDragActive(true);
     setDraggedColumnKey(press.key);
     setColumnDropTarget(null);
-    clearHeaderDragHint();
     // 长按往往已经选中了文字，清掉再进入拖拽，否则会出现"拖着一段蓝色选字"的错觉。
     try {
       window.getSelection()?.removeAllRanges();
@@ -2667,7 +2725,7 @@ export function AdvancedDataTable<T>({
         }
       }
     }
-  }, [clearHeaderDragHint, t]);
+  }, [t]);
 
   const endPointerColumnDrag = useCallback((clientX: number, clientY: number, commit: boolean) => {
     const session = columnPointerDragRef.current;
@@ -2835,10 +2893,6 @@ export function AdvancedDataTable<T>({
   }, [endPointerColumnDrag, pointerColumnDragActive]);
 
   useEffect(() => () => {
-    if (headerDragHintTimerRef.current != null) {
-      window.clearTimeout(headerDragHintTimerRef.current);
-      headerDragHintTimerRef.current = null;
-    }
     if (columnLongPressRef.current?.timer != null) window.clearTimeout(columnLongPressRef.current.timer);
     if (columnDragClickResetRef.current != null) window.clearTimeout(columnDragClickResetRef.current);
     columnDragGhostRef.current?.wrapper.remove();
@@ -3445,6 +3499,16 @@ export function AdvancedDataTable<T>({
     setFilters({});
     setActiveFilterColumn(null);
   };
+  /** 清掉单列筛选：表头字段名右侧的 X 用它，不影响其它列。 */
+  const clearColumnFilter = (key: string) => {
+    setFilters((prev) => {
+      if (!(key in prev)) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+    setActiveFilterColumn((current) => (current === key ? null : current));
+  };
   const clearSelection = () => setSelection(new Set());
   const hasCustomColumnWidths = Object.keys(columnWidths).length > 0;
   const columnVisibilityMenuContent = (
@@ -3477,7 +3541,6 @@ export function AdvancedDataTable<T>({
           type="button"
           onClick={resetColumnWidths}
           disabled={!hasCustomColumnWidths}
-          title={t("table.resetColumnWidths")}
           className={[
             "w-full rounded px-1.5 py-1 text-left text-xs",
             hasCustomColumnWidths ? "text-slate-600 hover:bg-slate-50" : "cursor-not-allowed text-slate-300",
@@ -3488,27 +3551,25 @@ export function AdvancedDataTable<T>({
       </div>
     </>
   );
+  /**
+   * 表格级状态只用这两枚胶囊：选中数、筛选命中数。自绘工具栏（持仓 / 债券 / 存款 / 明细）
+   * 与内置工具栏共用同一组组件，不要再各写一份「已选 N 条 / 清除选择」。
+   */
+  const selectionBadge = selectedCount > 0 ? (
+    <AdvancedDataTableSelectionBadge count={selectedCount} onClear={clearSelection} />
+  ) : null;
+  const filterStateBadge = hasAnyFilters ? (
+    <AdvancedDataTableFilterStateBadge
+      filteredCount={filteredRows.length}
+      totalCount={rows.length}
+      onClear={clearFilters}
+    />
+  ) : null;
+  /** 内置工具栏（default）一次给全两枚；custom 工具栏可以只留筛选胶囊，选择徽标由页面钉在按钮旁。 */
   const tableStateControls = (
     <>
-      {selectedCount > 0 ? (
-        <button
-          type="button"
-          onClick={clearSelection}
-          className="text-xs text-blue-600 hover:text-blue-700"
-        >
-          {t("table.clearSelection")}
-        </button>
-      ) : null}
-      {hasAnyFilters ? <span>{filteredRows.length}/{rows.length}</span> : null}
-      {hasAnyFilters ? (
-        <button
-          type="button"
-          onClick={clearFilters}
-          className="text-xs text-blue-600 hover:text-blue-700"
-        >
-          {t("table.clearFilters")}
-        </button>
-      ) : null}
+      {selectionBadge}
+      {filterStateBadge}
     </>
   );
   const headerPaddingClass = compactRows ? "px-3 py-1" : HEADER_PADDING_CLASS[rowHeightMode];
@@ -3541,9 +3602,8 @@ export function AdvancedDataTable<T>({
 
   const handleViewportScroll = useCallback((event: ReactUIEvent<HTMLDivElement>) => {
     syncHeaderToScrollLeft(event.currentTarget.scrollLeft);
-    // 表格一滚动，锚定在表头上的提示就不再对准，收掉。
-    clearHeaderDragHint();
-  }, [clearHeaderDragHint, syncHeaderToScrollLeft]);
+    // 提示层自己监听 scroll（capture）后立即收起，与这里不必重复。
+  }, [syncHeaderToScrollLeft]);
 
   /**
    * 键盘操作（行导航）。
@@ -3731,13 +3791,13 @@ export function AdvancedDataTable<T>({
                 >
                   {t("advancedTable.cancelDragHint")}
                 </span>
-                {showTableStateInCustomToolbar ? tableStateControls : null}
+                {showTableStateInCustomToolbar && showSelectionBadgeInCustomToolbar ? selectionBadge : null}
+                {showTableStateInCustomToolbar ? filterStateBadge : null}
               </>
             ) : (
               <>
                 {toolbarLeftContent}
                 {selectedCount > 0 ? batchActionSlot : null}
-                {selectable && selectedCount > 0 ? <span className="font-medium text-slate-600">{tf("table.selectedCount", { count: selectedCount })}</span> : null}
                 {selectedCount > 0 ? batchActions.map((action) => {
                   const icon = inferBatchActionIcon(action);
                   const title = action.title ?? action.label;
@@ -3747,12 +3807,19 @@ export function AdvancedDataTable<T>({
                       type="button"
                       onClick={action.onClick}
                       disabled={action.disabled}
+                      onPointerEnter={icon ? (event) => {
+                        if (event.pointerType === "touch" || action.disabled) return;
+                        cellHint.enter(event.currentTarget, {
+                          key: `advanced-table-batch:${action.label}`,
+                          items: [{ id: "batch-action", label: title }],
+                        });
+                      } : undefined}
+                      onPointerLeave={icon ? () => cellHint.leave(`advanced-table-batch:${action.label}`) : undefined}
                       className={
                         icon
                           ? `flex h-6 w-6 items-center justify-center rounded border transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${batchActionToneClass(action.tone ?? "primary")}`
                           : "secondary-button h-7 px-2 text-xs"
                       }
-                      title={title}
                       aria-label={action.ariaLabel ?? title}
                     >
                       {icon ?? action.label}
@@ -3811,8 +3878,17 @@ export function AdvancedDataTable<T>({
                     setExternalColumnMenuAnchor(null);
                     setMenuOpen((open) => !open);
                   }}
+                  onPointerEnter={(event) => {
+                    if (event.pointerType === "touch") return;
+                    cellHint.enter(event.currentTarget, {
+                      key: "advanced-table-column-settings",
+                      items: [{ id: "column-settings", label: t("table.columnSettings") }],
+                    });
+                  }}
+                  onPointerLeave={() => cellHint.leave("advanced-table-column-settings")}
+                  onPointerDown={() => cellHint.press()}
                   className="secondary-button h-7 px-2 text-xs"
-                  title={t("table.columnSettings")}
+                  aria-label={t("table.columnSettings")}
                 >
                   <SlidersHorizontal className="h-3.5 w-3.5" />
                 </button>
@@ -3874,7 +3950,15 @@ export function AdvancedDataTable<T>({
                           type="button"
                           onClick={invertVisibleSelection}
                           disabled={displayRowItems.length === 0}
-                          title={t("table.invertSelectionHint")}
+                          onPointerEnter={(event) => {
+                            if (event.pointerType === "touch" || displayRowItems.length === 0) return;
+                            cellHint.enter(event.currentTarget, {
+                              key: "advanced-table-invert-selection",
+                              items: [{ id: "invert", label: t("table.invertSelectionHint") }],
+                            });
+                          }}
+                          onPointerLeave={() => cellHint.leave("advanced-table-invert-selection")}
+                          onPointerDown={() => cellHint.press()}
                           aria-label={t("table.invertSelection")}
                           data-advanced-table-invert-selection
                           className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-500 transition-colors hover:bg-slate-200/70 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-40"
@@ -3889,42 +3973,99 @@ export function AdvancedDataTable<T>({
                   const isDraggedColumn = draggedColumnKey === column.key;
                   const isLongPressPending = longPressColumnKey === column.key;
                   const columnDrop = columnDropTarget?.key === column.key ? columnDropTarget : null;
+                  // 表头提示的内容和顺序在这里定死：第一条永远讲「这一列能不能被拾起」，
+                  // 第二条永远讲「点 / 双击这一列的字段名会发生什么」。
+                  const canReorderColumn = column.key !== "__row_actions";
+                  const sortableColumn = !!sortable && !!(column.sortValue || column.filterText);
+                  const filterableColumn = !!showFilters && !!column.filterText;
+                  const columnHintKey = `advanced-table-header:${column.key}`;
+                  const columnHintItems: HintItem[] = [];
+                  if (canReorderColumn) {
+                    columnHintItems.push({ id: "drag", icon: "drag", label: t("advancedTable.columnDragHint") });
+                  }
+                  if (sortableColumn || filterableColumn) {
+                    const sortedAsc = sortState?.key === column.key && sortState.direction === "asc";
+                    const sortedDesc = sortState?.key === column.key && sortState.direction === "desc";
+                    // 文案复用既有的「排序 + 双击筛选」组合键：同一列在三种状态下说的是同一件事，
+                    // 只是把「点击之后会变成什么」讲清楚。
+                    const actionHint = sortableColumn
+                      ? filterableColumn
+                        ? sortedAsc
+                          ? t("advancedTable.sortAscDesc")
+                          : sortedDesc
+                            ? t("advancedTable.sortDescCancel")
+                            : t("advancedTable.sortClickFilter")
+                        : sortedAsc
+                          ? t("advancedTable.sortAsc")
+                          : sortedDesc
+                            ? t("advancedTable.sortDesc")
+                            : t("advancedTable.sortClick")
+                      : t("advancedTable.doubleClickFilter", { label: labelText(column.label, column.key) });
+                    columnHintItems.push({
+                      id: "sort-filter",
+                      icon: sortableColumn ? "sort" : "filter",
+                      label: actionHint,
+                    });
+                  }
                   return (
                   <th
                     key={column.key}
                     data-advanced-table-header-cell={column.key}
                     // 钉住的列：transform 由 syncHeaderToScrollLeft 反向补偿（表头在滚动容器外）。
                     data-advanced-table-sticky-header={column.sticky === "right" ? "" : undefined}
+                    // 排序状态用 aria-sort 播报，视觉提示（点击排序 / 双击筛选）走统一提示层。
+                    aria-sort={sortableColumn ? (sortState?.key === column.key ? (sortState.direction === "asc" ? "ascending" : "descending") : "none") : undefined}
                     // 按住表头 0.4s 拾起该列，左右拖动调整位置（「行操作」列钉在最右，不参与）。
-                    onPointerDown={(event) => handleColumnPointerDown(event, column.key)}
-                    onMouseEnter={(event) => {
-                      if (column.key !== "__row_actions") scheduleHeaderDragHint(event.currentTarget);
+                    onPointerDown={(event) => {
+                      // 按下即收起刚刚弹出的提示：手势已经开始，提示会挡住落点。
+                      headerHint.press(columnHintKey);
+                      handleColumnPointerDown(event, column.key);
                     }}
-                    onMouseLeave={clearHeaderDragHint}
+                    onPointerEnter={(event) => {
+                      // 触屏没有 hover 语义；长按另有手势提示，不在指针进入时弹。
+                      if (event.pointerType === "touch") return;
+                      headerHint.enter(event.currentTarget, { key: columnHintKey, items: columnHintItems });
+                    }}
+                    onPointerLeave={() => headerHint.leave(columnHintKey)}
                     className={["relative select-none border-b border-slate-200 text-center text-xs font-semibold text-slate-600", headerPaddingClass, column.headerClassName ?? "", isDraggedColumn ? "opacity-40" : "", isLongPressPending ? "bg-blue-50/70" : "", column.sticky === "right" ? "z-[3] bg-[#fbfaf7] shadow-[-6px_0_6px_-6px_rgba(15,23,42,0.14)]" : ""].join(" ")}
                     style={columnDrop
                       ? { boxShadow: columnDrop.position === "before" ? "inset 2px 0 0 #3b82f6" : "inset -2px 0 0 #3b82f6" }
                       : undefined}
                   >
                     <div className="flex min-w-0 items-center justify-center gap-1">
-                      {(column.sortValue || column.filterText) && sortable ? (
+                      {sortableColumn ? (
                         <span
-                          className={`block min-w-0 truncate cursor-pointer select-none text-xs font-semibold transition-transform duration-200 ${sortState?.key === column.key ? "text-purple-600" : (filters[column.key]?.length ?? 0) > 0 ? "text-blue-600" : "text-slate-600"} ${sortState?.key === column.key && sortState.direction === "desc" ? "rotate-180" : ""}`}
+                          className={`block min-w-0 truncate cursor-pointer select-none text-xs font-semibold transition-transform duration-200 ${sortState?.key === column.key ? "text-purple-600" : (filters[column.key]?.length ?? 0) > 0 ? "text-purple-600" : "text-slate-600"} ${sortState?.key === column.key && sortState.direction === "desc" ? "rotate-180" : ""}`}
                           onClick={(event) => handleHeaderSortClick(event, column.key, showFilters && !!column.filterText)}
                           onDoubleClick={(event) => handleHeaderLabelDoubleClick(event, column.key, showFilters && !!column.filterText)}
-                          title={showFilters && column.filterText ? (sortState?.key === column.key ? (sortState.direction === "asc" ? t("advancedTable.sortAscDesc") : t("advancedTable.sortDescCancel")) : t("advancedTable.sortClickFilter")) : (sortState?.key === column.key ? (sortState.direction === "asc" ? t("advancedTable.sortAsc") : t("advancedTable.sortDesc")) : t("advancedTable.sortClick"))}
                         >
                           {labelText(column.label, column.key)}
                         </span>
                       ) : (
                         <span
-                          className={`block min-w-0 truncate text-xs font-semibold ${((filters[column.key]?.length ?? 0) > 0) ? "text-blue-600" : "text-slate-600"} ${showFilters && column.filterText ? "cursor-pointer hover:text-blue-600" : ""}`}
+                          className={`block min-w-0 truncate text-xs font-semibold ${((filters[column.key]?.length ?? 0) > 0) ? "text-purple-600" : "text-slate-600"} ${showFilters && column.filterText ? "cursor-pointer hover:text-purple-600" : ""}`}
                           onDoubleClick={(event) => handleHeaderLabelDoubleClick(event, column.key, showFilters && !!column.filterText)}
-                          title={showFilters && column.filterText ? t("advancedTable.doubleClickFilter", { label: labelText(column.label, column.key) }) : labelText(column.label, column.key)}
                         >
                           {labelText(column.label, column.key)}
                         </span>
                       )}
+                      {/* 该列有筛选时，字段名右侧就地给一个 X：只清这一列的筛选，不动其它列。
+                          用绝对定位挂在单元格右侧留白里，窄列（如「交易类型」）不会被挤成省略号。 */}
+                      {(filters[column.key]?.length ?? 0) > 0 ? (
+                        <button
+                          type="button"
+                          data-advanced-table-clear-column-filter={column.key}
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            clearColumnFilter(column.key);
+                          }}
+                          className="absolute right-0.5 top-1/2 z-[5] flex h-3.5 w-3.5 -translate-y-1/2 items-center justify-center rounded text-purple-600 transition-colors hover:bg-purple-100 hover:text-purple-700"
+                          aria-label={t("table.clearFilters")}
+                        >
+                          <X className="h-2.5 w-2.5" />
+                        </button>
+                      ) : null}
                       {showFilters && column.filterText ? (
                         column.filterKind === "dateRange" ? (
                           <DateRangeColumnFilter
@@ -4158,8 +4299,16 @@ export function AdvancedDataTable<T>({
                               onClick={(event) => event.stopPropagation()}
                               onDragStart={(event) => handleRowDragStart(event, key, dragDisabled)}
                               onDragEnd={handleRowDragEnd}
+                              onPointerEnter={(event) => {
+                                if (event.pointerType === "touch" || dragDisabled) return;
+                                cellHint.enter(event.currentTarget, {
+                                  key: `advanced-table-row-drag:${key}`,
+                                  items: [{ id: "row-drag", icon: "drag", label: t("advancedTable.dragSort") }],
+                                });
+                              }}
+                              onPointerLeave={() => cellHint.leave(`advanced-table-row-drag:${key}`)}
+                              onPointerDown={() => cellHint.press()}
                               className={`flex h-5 w-4 items-center justify-center rounded text-slate-300 transition hover:bg-slate-100 hover:text-slate-500 ${dragDisabled ? "cursor-not-allowed opacity-30" : "cursor-grab active:cursor-grabbing"}`}
-                              title={t("advancedTable.dragSort")}
                               aria-label={t("advancedTable.dragSort")}
                             >
                               <SpriteIcon name="grip-vertical" className="h-3.5 w-3.5" />
@@ -4190,8 +4339,22 @@ export function AdvancedDataTable<T>({
                     const titleText = rawTitle && rawTitle.trim() !== plainTextOf(cellContent).trim()
                       ? rawTitle
                       : null;
+                    const cellHintKey = `advanced-table-cell:${key}:${column.key}`;
+                    // 截断的单元格用统一提示补全文（与表头提示同一套触发/视觉），
+                    // 只有当 title 比可见文字多出信息时才挂，避免把同一句话再说一遍。
                     const wrappedContent = column.truncate ? (
-                      <div className="min-w-0 truncate" title={titleText ?? undefined}>
+                      <div
+                        className="min-w-0 truncate"
+                        onPointerEnter={titleText ? (event) => {
+                          if (event.pointerType === "touch") return;
+                          cellHint.enter(event.currentTarget, {
+                            key: cellHintKey,
+                            items: [{ id: "cell-text", label: titleText, wrap: true }],
+                          });
+                        } : undefined}
+                        onPointerLeave={titleText ? () => cellHint.leave(cellHintKey) : undefined}
+                        onPointerDown={titleText ? () => cellHint.press() : undefined}
+                      >
                         {cellContent}
                       </div>
                     ) : cellContent;
@@ -4300,16 +4463,6 @@ export function AdvancedDataTable<T>({
               </tbody>
             </table>
           </div>
-        </div>
-      ) : null}
-      {headerDragHint ? (
-        <div
-          data-advanced-table-column-drag-hint
-          className="pointer-events-none fixed z-50 flex items-center gap-1 whitespace-nowrap rounded-md bg-slate-800 px-2 py-1 text-[11px] font-medium text-white shadow-soft"
-          style={{ top: headerDragHint.top, left: headerDragHint.left, transform: "translateX(-50%)" }}
-        >
-          <GripVertical className="h-3 w-3" />
-          {t("advancedTable.columnDragHint")}
         </div>
       ) : null}
       {resizeGuide ? (

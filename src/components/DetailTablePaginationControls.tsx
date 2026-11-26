@@ -4,6 +4,7 @@ import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { DateStepper } from "@/components/DateStepper";
+import { useHint } from "@/components/HintLayer";
 import type { DetailPagination } from "@/lib/client/use-detail-pagination";
 
 /**
@@ -80,6 +81,11 @@ export function DetailTablePaginationControls({
   const { t } = useI18n();
   const [pageInput, setPageInput] = useState(() => String(safePage));
   const [locateDate, setLocateDate] = useState("");
+  // 四个箭头都是纯图元，能力说明统一走提示层；「全部显示」时说明为什么点不动。
+  const firstPageHint = useHint("pagination:first", [{ label: paged ? t("creditBill.firstPage") : t("pagination.allMode") }]);
+  const prevPageHint = useHint("pagination:prev", [{ label: paged ? t("creditBill.prevPage") : t("pagination.allMode") }]);
+  const nextPageHint = useHint("pagination:next", [{ label: paged ? t("creditBill.nextPage") : t("pagination.allMode") }]);
+  const lastPageHint = useHint("pagination:last", [{ label: paged ? t("creditBill.lastPage") : t("pagination.allMode") }]);
 
   useEffect(() => {
     setPageInput(String(safePage));
@@ -156,7 +162,6 @@ export function DetailTablePaginationControls({
           const nextSize = parseInt(value, 10);
           if (Number.isFinite(nextSize) && nextSize > 0) onPageSizeChange(nextSize);
         }}
-        title={t("pagination.perPage")}
         aria-label={t("pagination.perPage")}
         className="h-6 rounded border border-slate-200 bg-white px-1 text-slate-700 hover:bg-slate-50"
       >
@@ -171,10 +176,10 @@ export function DetailTablePaginationControls({
       </select>
       {paged ? <span className="text-slate-500">{t("pagination.items")}</span> : null}
       <span className="text-slate-300">|</span>
-      <button type="button" onClick={() => onPageChange(1)} disabled={!canPrev} className={pageArrowClass(canPrev)} title={paged ? t("creditBill.firstPage") : t("pagination.allMode")}>
+      <button type="button" onClick={() => onPageChange(1)} disabled={!canPrev} className={pageArrowClass(canPrev)} aria-label={paged ? t("creditBill.firstPage") : t("pagination.allMode")} {...firstPageHint}>
         <ChevronsLeft className="h-[18px] w-3.5" preserveAspectRatio="none" />
       </button>
-      <button type="button" onClick={() => onPageChange(safePage - 1)} disabled={!canPrev} className={pageArrowClass(canPrev)} title={paged ? t("creditBill.prevPage") : t("pagination.allMode")}>
+      <button type="button" onClick={() => onPageChange(safePage - 1)} disabled={!canPrev} className={pageArrowClass(canPrev)} aria-label={paged ? t("creditBill.prevPage") : t("pagination.allMode")} {...prevPageHint}>
         <ChevronLeft className="h-[18px] w-3.5" preserveAspectRatio="none" />
       </button>
       {paged ? (
@@ -206,23 +211,22 @@ export function DetailTablePaginationControls({
                 (event.target as HTMLInputElement).blur();
               }
             }}
-            title={t("pagination.pageInputTitle")}
             aria-label={t("pagination.pageInputTitle")}
             className="h-6 w-8 rounded border border-transparent bg-transparent text-center text-xs leading-6 text-slate-600 outline-none transition-colors hover:border-slate-200 hover:bg-white focus:border-blue-300 focus:bg-white disabled:cursor-not-allowed disabled:border-transparent disabled:bg-transparent disabled:text-slate-300"
           />
           <span className="text-xs text-slate-600">/ {totalPages}</span>
         </>
       ) : null}
-      <button type="button" onClick={() => onPageChange(safePage + 1)} disabled={!canNext} className={pageArrowClass(canNext)} title={paged ? t("creditBill.nextPage") : t("pagination.allMode")}>
+      <button type="button" onClick={() => onPageChange(safePage + 1)} disabled={!canNext} className={pageArrowClass(canNext)} aria-label={paged ? t("creditBill.nextPage") : t("pagination.allMode")} {...nextPageHint}>
         <ChevronRight className="h-[18px] w-3.5" preserveAspectRatio="none" />
       </button>
-      <button type="button" onClick={() => onPageChange(totalPages)} disabled={!canNext} className={pageArrowClass(canNext)} title={paged ? t("creditBill.lastPage") : t("pagination.allMode")}>
+      <button type="button" onClick={() => onPageChange(totalPages)} disabled={!canNext} className={pageArrowClass(canNext)} aria-label={paged ? t("creditBill.lastPage") : t("pagination.allMode")} {...lastPageHint}>
         <ChevronsRight className="h-[18px] w-3.5" preserveAspectRatio="none" />
       </button>
       {onLocateDate ? (
         <>
           <span className="text-slate-300">|</span>
-          <div className="w-fit" title={t("pagination.locateDateTitle")}>
+          <div className="w-fit">
             <DateStepper
               compact
               value={locateDate}

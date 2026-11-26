@@ -6,6 +6,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { useI18n } from "@/lib/i18n";
 import { useOutsideClose } from "@/lib/client/useOutsideClose";
 import { DateStepper } from "@/components/DateStepper";
+import { useHint, useHintTrigger } from "@/components/HintLayer";
 
 /** 「一个都不选」在筛选值里要占一个哨兵位；空数组的含义是「清除筛选＝全选」。 */
 const NO_MATCH_VALUE = "__NO_MATCH__";
@@ -222,6 +223,9 @@ export function TableColumnFilter({
   const keywordActive = keyword.trim().length > 0;
   const keywordMatchedCount = visibleOptions.length;
   const hasDraft = draftValues !== null;
+  // 选项名被截断时用统一提示补全文（与表头提示同一套视觉和 300ms 触发）。
+  const optionHint = useHintTrigger();
+  const triggerHint = useHint(`table-filter-trigger:${label}`, [{ label: filterTitle }]);
 
   return (
     <div ref={rootRef} className="relative inline-flex items-center gap-1">
@@ -233,8 +237,9 @@ export function TableColumnFilter({
             event.stopPropagation();
             onToggleOpen();
           }}
-          className={`h-5 w-4 text-[10px] leading-none ${filtered ? "text-blue-600" : "text-slate-900"} hover:text-blue-600`}
-          title={filterTitle}
+          className={`h-5 w-4 text-[10px] leading-none ${filtered ? "text-purple-600" : "text-slate-900"} hover:text-purple-600`}
+          aria-label={filterTitle}
+          {...triggerHint}
         >
           ▼
         </button>
@@ -242,7 +247,7 @@ export function TableColumnFilter({
       <FilterPopover open={open} anchorRef={rootRef} className="h-96 min-h-52 min-w-56 max-w-[min(640px,90vw)] resize overflow-auto rounded-lg border border-slate-200 bg-white p-2 shadow-xl" height={384}>
           <div className="mb-2 flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
             <span className="text-xs font-medium text-slate-700">{filterTitle}</span>
-            <button title={t("table.close")} aria-label={t("table.close")} type="button" onClick={handleClose} className="secondary-button inline-flex h-7 w-7 shrink-0 items-center justify-center px-0">
+            <button aria-label={t("table.close")} type="button" onClick={handleClose} className="secondary-button inline-flex h-7 w-7 shrink-0 items-center justify-center px-0">
               <X className="h-4 w-4" />
             </button>
           </div>
@@ -295,7 +300,14 @@ export function TableColumnFilter({
               return (
                 <div
                   key={value}
-                  title={title}
+                  onPointerEnter={(event) => {
+                    if (event.pointerType === "touch" || title === value) return;
+                    optionHint.enter(event.currentTarget, {
+                      key: `table-filter-option:${value}`,
+                      items: [{ id: "option", label: title, wrap: true }],
+                    });
+                  }}
+                  onPointerLeave={() => optionHint.leave(`table-filter-option:${value}`)}
                   className={`flex w-full items-center gap-2 rounded px-1 py-1 text-left text-xs ${
                     checked ? "bg-blue-50 text-blue-700" : "text-slate-700 hover:bg-slate-50"
                   }`}
@@ -323,9 +335,8 @@ export function TableColumnFilter({
                       onClose();
                     }}
                     className="flex min-w-0 flex-1 items-center justify-between gap-2 text-left"
-                    title={title}
                   >
-                    <span className="min-w-0 truncate" title={title}>{value}</span>
+                    <span className="min-w-0 truncate">{value}</span>
                     {count != null ? (
                       <span className="shrink-0 rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] tabular-nums text-slate-500">
                         {count}
@@ -369,6 +380,7 @@ export function DateRangeColumnFilter({
   useOutsideClose(rootRef, open, onClose);
 
   const active = !!from || !!to;
+  const triggerHint = useHint(`table-filter-trigger:${label}`, [{ label: filterTitle }]);
 
   return (
     <div ref={rootRef} className="relative inline-flex items-center gap-1">
@@ -380,8 +392,9 @@ export function DateRangeColumnFilter({
             event.stopPropagation();
             onToggleOpen();
           }}
-          className={`h-5 w-4 text-[10px] leading-none ${active ? "text-blue-600" : "text-slate-900"} hover:text-blue-600`}
-          title={filterTitle}
+          className={`h-5 w-4 text-[10px] leading-none ${active ? "text-purple-600" : "text-slate-900"} hover:text-purple-600`}
+          aria-label={filterTitle}
+          {...triggerHint}
         >
           ▼
         </button>
@@ -389,7 +402,7 @@ export function DateRangeColumnFilter({
       <FilterPopover open={open} anchorRef={rootRef} className="rounded-lg border border-slate-200 bg-white p-2 shadow-xl">
           <div className="mb-2 flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
             <span className="text-xs font-medium text-slate-700">{filterTitle}</span>
-            <button title={t("table.close")} aria-label={t("table.close")} type="button" onClick={onClose} className="secondary-button inline-flex h-7 w-7 shrink-0 items-center justify-center px-0">
+            <button aria-label={t("table.close")} type="button" onClick={onClose} className="secondary-button inline-flex h-7 w-7 shrink-0 items-center justify-center px-0">
               <X className="h-4 w-4" />
             </button>
           </div>
@@ -465,6 +478,7 @@ export function NumberRangeColumnFilter({
   useOutsideClose(rootRef, open, onClose);
 
   const active = !!from || !!to;
+  const triggerHint = useHint(`table-filter-trigger:${label}`, [{ label: filterTitle }]);
 
   return (
     <div ref={rootRef} className="relative inline-flex items-center gap-1">
@@ -476,8 +490,9 @@ export function NumberRangeColumnFilter({
             event.stopPropagation();
             onToggleOpen();
           }}
-          className={`h-5 w-4 text-[10px] leading-none ${active ? "text-blue-600" : "text-slate-900"} hover:text-blue-600`}
-          title={filterTitle}
+          className={`h-5 w-4 text-[10px] leading-none ${active ? "text-purple-600" : "text-slate-900"} hover:text-purple-600`}
+          aria-label={filterTitle}
+          {...triggerHint}
         >
           ▼
         </button>
@@ -485,7 +500,7 @@ export function NumberRangeColumnFilter({
       <FilterPopover open={open} anchorRef={rootRef} className="rounded-lg border border-slate-200 bg-white p-2 shadow-xl">
           <div className="mb-2 flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
             <span className="text-xs font-medium text-slate-700">{filterTitle}</span>
-            <button title={t("table.close")} aria-label={t("table.close")} type="button" onClick={onClose} className="secondary-button inline-flex h-7 w-7 shrink-0 items-center justify-center px-0">
+            <button aria-label={t("table.close")} type="button" onClick={onClose} className="secondary-button inline-flex h-7 w-7 shrink-0 items-center justify-center px-0">
               <X className="h-4 w-4" />
             </button>
           </div>
@@ -574,6 +589,7 @@ export function TextColumnFilter({
   useOutsideClose(rootRef, open, onClose);
 
   const active = value.trim().length > 0;
+  const triggerHint = useHint(`table-filter-trigger:${label}`, [{ label: filterTitle }]);
 
   function apply() {
     onChange(draft.trim());
@@ -590,8 +606,9 @@ export function TextColumnFilter({
             event.stopPropagation();
             onToggleOpen();
           }}
-          className={`h-5 w-4 text-[10px] leading-none ${active ? "text-blue-600" : "text-slate-900"} hover:text-blue-600`}
-          title={filterTitle}
+          className={`h-5 w-4 text-[10px] leading-none ${active ? "text-purple-600" : "text-slate-900"} hover:text-purple-600`}
+          aria-label={filterTitle}
+          {...triggerHint}
         >
           ▼
         </button>
@@ -599,7 +616,7 @@ export function TextColumnFilter({
       <FilterPopover open={open} anchorRef={rootRef} className="rounded-lg border border-slate-200 bg-white p-2 shadow-xl">
           <div className="mb-2 flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
             <span className="text-xs font-medium text-slate-700">{filterTitle}</span>
-            <button title={t("table.close")} aria-label={t("table.close")} type="button" onClick={onClose} className="secondary-button inline-flex h-7 w-7 shrink-0 items-center justify-center px-0">
+            <button aria-label={t("table.close")} type="button" onClick={onClose} className="secondary-button inline-flex h-7 w-7 shrink-0 items-center justify-center px-0">
               <X className="h-4 w-4" />
             </button>
           </div>

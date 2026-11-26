@@ -16,6 +16,7 @@ import { CalendarRange, ChevronDown, X } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { useOutsideClose } from "@/lib/client/useOutsideClose";
 import { DateStepper } from "./DateStepper";
+import { useHint } from "./HintLayer";
 
 /**
  * 「显示范围」：一枚 chip + 双滑块弹层。
@@ -444,6 +445,21 @@ export function DateRangeSliderFilter({
     // 松手只落草稿；下发在「确认」。
   };
 
+  // 时间轴上的两处「看不见的能力」：浮块可拖动、今天右侧那段是未来流水。
+  const dragHint = useHint("advanced-table-date-range-drag", [{ id: "drag", icon: "drag", label: t("advancedTable.dateRangeDragHint") }]);
+  const futureHint = useHint("advanced-table-date-range-future", [{
+    id: "future",
+    icon: "info",
+    label: t("advancedTable.dateRangeFutureHint", { date: max }),
+    wrap: true,
+  }]);
+  const includeFutureHint = useHint("advanced-table-date-range-include-future", [{
+    id: "include-future",
+    icon: "info",
+    label: t("advancedTable.dateRangeFutureHint", { date: max }),
+    wrap: true,
+  }]);
+
   /**
    * 快捷区间：只改草稿，仍等「确认」才刷新表格。
    *
@@ -545,7 +561,7 @@ export function DateRangeSliderFilter({
         // 不再用 secondary-button 的 10px 圆角和淡描边，否则两个并排的日期控件一眼
         // 就是两个体系。
         className={`inline-flex h-7 shrink-0 items-center gap-1 rounded border bg-white px-2 text-xs tabular-nums text-slate-700 transition-colors hover:bg-slate-50 ${active ? "border-blue-300 text-blue-700" : "border-slate-200"}`}
-        title={t("advancedTable.dateRangeFilter")}
+        aria-label={t("advancedTable.dateRangeFilter")}
         aria-haspopup="dialog"
         aria-expanded={open}
       >
@@ -568,7 +584,7 @@ export function DateRangeSliderFilter({
             <span className="text-xs font-medium text-slate-700">{t("advancedTable.dateRangeFilter")}</span>
             <div className="flex items-center gap-2">
               {hasTrack ? <span className="text-xs tabular-nums text-slate-500">{t("advancedTable.dateRangeDays", { count: dayCount })}</span> : null}
-              <button title={t("table.close")} aria-label={t("table.close")} type="button" onClick={() => setOpen(false)} className="secondary-button inline-flex h-7 w-7 shrink-0 items-center justify-center px-0">
+              <button aria-label={t("table.close")} type="button" onClick={() => setOpen(false)} className="secondary-button inline-flex h-7 w-7 shrink-0 items-center justify-center px-0">
                 <X className="h-4 w-4" />
               </button>
             </div>
@@ -597,7 +613,7 @@ export function DateRangeSliderFilter({
                 夹取后的值，越界的输入不会留在框里。
               */}
               <div className="mb-1 flex items-center gap-1.5 text-slate-600">
-                <div className="min-w-0 flex-1" title={t("table.from")}>
+                <div className="min-w-0 flex-1">
                   <DateStepper
                     compact
                     value={fromInput ?? (draftFrom || min)}
@@ -611,7 +627,7 @@ export function DateRangeSliderFilter({
                   />
                 </div>
                 <span className="shrink-0 text-slate-300">~</span>
-                <div className="min-w-0 flex-1" title={t("table.to")}>
+                <div className="min-w-0 flex-1">
                   <DateStepper
                     compact
                     value={toInput ?? (draftTo || max)}
@@ -643,7 +659,7 @@ export function DateRangeSliderFilter({
                     <div
                       className="absolute top-1/2 h-1.5 -translate-y-1/2 rounded-r-full bg-slate-300"
                       style={{ left: `${softMaxPercent}%`, right: 0 }}
-                      title={t("advancedTable.dateRangeFutureHint", { date: max })}
+                      {...futureHint}
                     />
                     <div
                       className="absolute top-1/2 h-3 w-px -translate-y-1/2 bg-slate-400"
@@ -661,7 +677,7 @@ export function DateRangeSliderFilter({
                   style={blockRect
                     ? { left: blockRect.left, width: blockRect.width }
                     : { left: `${fromPercent}%`, right: `${100 - toPercent}%` }}
-                  title={t("advancedTable.dateRangeDragHint")}
+                  {...dragHint}
                 />
                 <div
                   role="slider"
@@ -712,8 +728,8 @@ export function DateRangeSliderFilter({
             {/* 收窄/放宽只是微调，用和「清空」同层的文字按钮，别在同一个弹层里
                 再摆一排描边小按钮 —— 那是列表头筛选弹层里没有的视觉层级。 */}
             <div className="flex items-center gap-2 text-xs text-slate-500">
-              <button type="button" onClick={() => zoomRange(0.5)} disabled={!hasTrack} className="hover:text-slate-700 disabled:cursor-not-allowed disabled:text-slate-300" title={t("advancedTable.dateRangeNarrow")}>{t("advancedTable.dateRangeNarrow")}</button>
-              <button type="button" onClick={() => zoomRange(2)} disabled={!hasTrack} className="hover:text-slate-700 disabled:cursor-not-allowed disabled:text-slate-300" title={t("advancedTable.dateRangeWiden")}>{t("advancedTable.dateRangeWiden")}</button>
+              <button type="button" onClick={() => zoomRange(0.5)} disabled={!hasTrack} className="hover:text-slate-700 disabled:cursor-not-allowed disabled:text-slate-300">{t("advancedTable.dateRangeNarrow")}</button>
+              <button type="button" onClick={() => zoomRange(2)} disabled={!hasTrack} className="hover:text-slate-700 disabled:cursor-not-allowed disabled:text-slate-300">{t("advancedTable.dateRangeWiden")}</button>
               <span className="h-3 w-px shrink-0 bg-slate-200" aria-hidden />
               {/*
                 「含未来」开关：未来记账不在默认口径里（不计余额、不进统计），所以
@@ -726,7 +742,7 @@ export function DateRangeSliderFilter({
                 role="switch"
                 aria-checked={futureIncluded}
                 aria-label={t("advancedTable.dateRangeIncludeFuture")}
-                title={t("advancedTable.dateRangeFutureHint", { date: max })}
+                {...includeFutureHint}
                 onClick={toggleFuture}
                 disabled={!hasFutureZone}
                 className="inline-flex items-center gap-1.5 rounded-full text-xs text-slate-500 outline-none focus-visible:ring-2 focus-visible:ring-blue-300 disabled:cursor-not-allowed disabled:text-slate-300"

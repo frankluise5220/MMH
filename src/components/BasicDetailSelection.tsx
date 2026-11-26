@@ -32,6 +32,7 @@ import {
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { recordRecentAccounts } from "@/lib/client/recentAccounts";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
+import { BATCH_ACCOUNT_SELECT_BEHAVIOR, BATCH_TAG_SELECT_BEHAVIOR } from "@/lib/batch-account-options";
 import { batchReplaceEntries, type BatchReplaceField } from "@/lib/client/batchReplaceEntries";
 import { translate, useI18n } from "@/lib/i18n";
 
@@ -45,7 +46,7 @@ type SelectionContextValue = {
   setDeleteMessage: (msg: string) => void;
 };
 
-type AccountOption = { id: string; label: string; title?: string | null };
+type AccountOption = { id: string; label: string; title?: string | null; subLabel?: string | null };
 export type BasicDetailBatchCategoryOption = BatchReplaceOption;
 
 function getFieldLabels(t: (key: string) => string): Record<BatchReplaceField, string> {
@@ -227,7 +228,12 @@ export function BasicDetailBatchReplaceButton({
     const typeOptions = getTypeOptions(t);
     const accountSelectOptions = [
       { value: "", label: t("fundShell.selectAccount") },
-      ...accountOptions.map((account) => ({ value: account.id, label: account.label, title: account.title ?? undefined })),
+      ...accountOptions.map((account) => ({
+        value: account.id,
+        label: account.label,
+        subLabel: account.subLabel ?? undefined,
+        title: account.title ?? undefined,
+      })),
     ];
     const categorySelectOptions = [
       { value: "", label: t("basicDetailSelection.clearCategory") },
@@ -253,18 +259,21 @@ export function BasicDetailBatchReplaceButton({
         label: fieldLabels.account,
         kind: "smartSelect",
         options: accountSelectOptions,
+        smartSelectBehavior: BATCH_ACCOUNT_SELECT_BEHAVIOR,
       },
       viewAccount: {
         value: "viewAccount",
         label: fieldLabels.viewAccount,
         kind: "smartSelect",
         options: accountSelectOptions,
+        smartSelectBehavior: BATCH_ACCOUNT_SELECT_BEHAVIOR,
       },
       toAccount: {
         value: "toAccount",
         label: fieldLabels.toAccount,
         kind: "smartSelect",
         options: accountSelectOptions,
+        smartSelectBehavior: BATCH_ACCOUNT_SELECT_BEHAVIOR,
       },
       // 只改「钱从哪出 / 进到哪」的那一列，金额正负与方向语义都不动；
       // 该行本来没有这一侧（余额校准）会被后端跳过并计数。
@@ -273,6 +282,7 @@ export function BasicDetailBatchReplaceButton({
         label: fieldLabels.outflowAccount,
         kind: "smartSelect",
         options: accountSelectOptions,
+        smartSelectBehavior: BATCH_ACCOUNT_SELECT_BEHAVIOR,
         hint: t("basicDetailSelection.hint.outflowAccount"),
       },
       inflowAccount: {
@@ -280,6 +290,7 @@ export function BasicDetailBatchReplaceButton({
         label: fieldLabels.inflowAccount,
         kind: "smartSelect",
         options: accountSelectOptions,
+        smartSelectBehavior: BATCH_ACCOUNT_SELECT_BEHAVIOR,
         hint: t("basicDetailSelection.hint.inflowAccount"),
       },
       // 往来明细的账户口径：往来款账户（本行往来款那一侧）与对手账户（另一端）。
@@ -289,6 +300,7 @@ export function BasicDetailBatchReplaceButton({
         label: fieldLabels.liabilityAccount,
         kind: "smartSelect",
         options: accountSelectOptions,
+        smartSelectBehavior: BATCH_ACCOUNT_SELECT_BEHAVIOR,
         hint: t("basicDetailSelection.hint.liabilityAccount"),
       },
       counterpartyAccount: {
@@ -296,6 +308,7 @@ export function BasicDetailBatchReplaceButton({
         label: fieldLabels.counterpartyAccount,
         kind: "smartSelect",
         options: accountSelectOptions,
+        smartSelectBehavior: BATCH_ACCOUNT_SELECT_BEHAVIOR,
         hint: t("basicDetailSelection.hint.counterpartyAccount"),
       },
       categoryId: {
@@ -311,10 +324,30 @@ export function BasicDetailBatchReplaceButton({
         },
       },
       institution: { value: "institution", label: fieldLabels.institution, kind: "text", placeholder: t("basicDetailSelection.institutionPlaceholder"), allowEmpty: true },
-      tagId: { value: "tagId", label: fieldLabels.tagId, kind: "select", options: tagSelectOptions, allowEmpty: true },
+      tagId: {
+        value: "tagId",
+        label: fieldLabels.tagId,
+        kind: "smartSelect",
+        options: tagSelectOptions,
+        allowEmpty: true,
+        smartSelectBehavior: BATCH_TAG_SELECT_BEHAVIOR,
+      },
       // 追加标签：保留记录已有标签，把所选标签并上去重；空选项只是占位（allowEmpty=false 挡住未选择就提交）。
-      appendTagId: { value: "appendTagId", label: fieldLabels.appendTagId, kind: "select", options: [{ value: "", label: t("txForm.selectPlaceholder") }, ...tagOptions] },
-      remark: { value: "remark", label: fieldLabels.remark, kind: "text", placeholder: t("stockPanel.batchNotePlaceholder"), allowEmpty: true },
+      appendTagId: {
+        value: "appendTagId",
+        label: fieldLabels.appendTagId,
+        kind: "smartSelect",
+        options: [{ value: "", label: t("txForm.selectPlaceholder") }, ...tagOptions],
+        smartSelectBehavior: BATCH_TAG_SELECT_BEHAVIOR,
+      },
+      remark: {
+        value: "remark",
+        label: fieldLabels.remark,
+        kind: "text",
+        placeholder: t("batchReplace.remarkPlaceholder"),
+        hint: t("batchReplace.remarkHint"),
+        allowEmpty: true,
+      },
     };
     return fields
       .map((field) => {

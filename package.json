@@ -35,6 +35,7 @@
     "check:backup": "node scripts/verify-backup-completeness.cjs && node scripts/check-backup-coverage.cjs && node scripts/check-restore-field-coverage.cjs && node scripts/check-backup-package.cjs && tsx scripts/verify-backup-package.ts",
     "check:timezone": "node scripts/check-date-timezone.cjs",
     "check:account-label": "node scripts/check-account-label.cjs",
+    "check:hints": "node scripts/check-hint-system.cjs",
     "check:client-boundary": "node scripts/check-client-boundary.cjs",
     "check:import-match": "tsx scripts/verify-import-account-match.ts",
     "check:credit-card-institution": "tsx scripts/verify-credit-card-institution.ts",

@@ -1,5 +1,6 @@
 "use client";
 import { ModalLayer } from "@/components/ModalLayer";
+import { useHint } from "@/components/HintLayer";
 
 import { useCallback, useState, useEffect, useRef, RefObject } from "react";
 import { createPortal } from "react-dom";
@@ -25,6 +26,10 @@ export function LedgerSwitcher({
 }) {
   const router = useRouter();
   const { t } = useI18n();
+  const closeLabel = t("table.close");
+  const switchCloseHint = useHint("ledger-switch-close", [{ id: "close", label: closeLabel }]);
+  const createCloseHint = useHint("ledger-create-close", [{ id: "close", label: closeLabel }]);
+  const deleteCloseHint = useHint("ledger-delete-close", [{ id: "close", label: closeLabel }]);
   const [households, setHouseholds] = useState<Household[]>([]);
   const [isAdminUser, setIsAdminUser] = useState(false);
   const [isSystemUser, setIsSystemUser] = useState(false);
@@ -439,8 +444,8 @@ export function LedgerSwitcher({
                     onClick={() => { setSwitchTargetId(null); setSwitchUsername(""); setSwitchPassword(""); setSwitchError(""); }}
                     disabled={switching}
                     className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-400 hover:bg-white hover:text-slate-600 disabled:opacity-40"
-                    title={t("table.close")}
-                    aria-label={t("table.close")}
+                    {...switchCloseHint}
+                    aria-label={closeLabel}
                   >
                     <X className="h-4 w-4" />
                   </button>
@@ -528,8 +533,8 @@ export function LedgerSwitcher({
                   onClick={() => { setShowCreateDialog(false); setCreateAdminName(""); setCreateAdminPassword(""); setCreateAdminPasswordConfirm(""); setCreateAdminEmail(""); }}
                   disabled={adding}
                   className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-400 hover:bg-white hover:text-slate-600 disabled:opacity-40"
-                  title={t("table.close")}
-                  aria-label={t("table.close")}
+                  {...createCloseHint}
+                  aria-label={closeLabel}
                 >
                   <X className="h-4 w-4" />
                 </button>
@@ -623,8 +628,8 @@ export function LedgerSwitcher({
                     onClick={() => { setDeletingId(null); setDeleteConfirmName(""); setDeleteDbPassword(""); setDeleteError(""); }}
                     disabled={deleting}
                     className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-red-400 hover:bg-white hover:text-red-600 disabled:opacity-40"
-                    title={t("table.close")}
-                    aria-label={t("table.close")}
+                    {...deleteCloseHint}
+                    aria-label={closeLabel}
                   >
                     <X className="h-4 w-4" />
                   </button>

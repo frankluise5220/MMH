@@ -2,6 +2,7 @@ import { FundCashFlowKind, FundProductType, FundSubtype, Prisma, TransactionType
 import { prisma } from "@/lib/db/prisma";
 import { formatDateUtc, toNumber } from "@/lib/date-utils";
 import { entryBusinessTypeLabel, upsertEntryBusinessCashFlowLink } from "@/lib/server/entry-business-link";
+import { attachEntryTagsToRows } from "@/lib/server/entry-tags";
 import { createManySkipDuplicatesCompat } from "@/lib/server/prisma-create-many";
 import { regularInvestRefundNote } from "@/lib/fund/regular-invest-display";
 import { getInvestmentCategoryName } from "@/lib/investment-category";
@@ -938,5 +939,7 @@ export async function loadFundTransactionEntryLike(params: {
       });
     }
   }
+  await attachEntryTagsToRows(entries);
+
   return entries;
 }

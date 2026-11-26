@@ -64,7 +64,17 @@ export async function POST(req: Request) {
         password ? "PDF 打开密码不正确，请重新输入" : "PDF 有打开密码，请输入密码后再导入",
       );
     }
+    // 加密方式不认（pdfjs 读加密字典就拒绝）：补密码也没用，只能引导用户另存为未加密 PDF。
+    // 这条必须排在通用失败之前，否则会被说成「文件可能已损坏」，用户以为少弹了密码框。
+    if (pdf.encryptionUnsupported) {
+      console.warn("[statement/parse-pdf] unsupported encryption", { filename, error: pdf.error });
+      return fail(
+        "PDF_ENCRYPTION_UNSUPPORTED",
+        "这份 PDF 的加密方式暂不支持（与密码无关）。请用 PDF 阅读器输入密码打开后「另存为」或「打印为 PDF」去掉加密，再导入",
+      );
+    }
     if (pdf.error) {
+      console.warn("[statement/parse-pdf] parse failed", { filename, error: pdf.error });
       return fail("PDF_PARSE_FAILED", `PDF 解析失败：${pdf.error}`);
     }
     if (!pdf.hasTextLayer && !pdf.text.trim()) {

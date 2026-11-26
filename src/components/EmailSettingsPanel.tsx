@@ -191,7 +191,7 @@ type MailAttachment = {
   text?: string;
   parseError?: string;
   /** 服务端给出的失败原因码，界面按码走三语文案，不直出英文原文。 */
-  parseErrorCode?: "pdf_password_required" | "pdf_parse_failed" | "pdf_no_text_layer" | "spreadsheet_parse_failed";
+  parseErrorCode?: "pdf_password_required" | "pdf_encryption_unsupported" | "pdf_parse_failed" | "pdf_no_text_layer" | "spreadsheet_parse_failed";
   /** PDF 设了打开密码：展示密码输入框，补密码后重新抓取该封邮件解密。 */
   passwordRequired?: boolean;
 };
@@ -878,6 +878,7 @@ export function EmailSettingsPanel({
   function attachmentErrorText(attachment: MailAttachment) {
     switch (attachment.parseErrorCode) {
       case "pdf_password_required": return t("settings.email.pdfPasswordRequired");
+      case "pdf_encryption_unsupported": return t("settings.email.pdfEncryptionUnsupported");
       case "pdf_parse_failed": return t("settings.email.pdfParseFailed");
       case "pdf_no_text_layer": return t("settings.email.pdfNoTextLayer");
       case "spreadsheet_parse_failed": return t("settings.email.attachmentSpreadsheetFailed");

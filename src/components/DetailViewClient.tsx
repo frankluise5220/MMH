@@ -10,10 +10,8 @@ import { formatCurrencyMoney } from "@/lib/format";
 import { getColorSchemeFromCookie, pnlColor } from "@/lib/client/colors";
 import { getInsuranceDetailCategoryName, getInsuranceDetailNote } from "@/lib/insurance/detail-display";
 import { dispatchEntryEdit, EntryRowActions, type EditPayload } from "./EntryRowActions";
-import { AdvancedDataTable, ROW_ACTION_BUTTON_BOX_CLASS, type AdvancedDataTableColumn, type AdvancedDataTableDropPosition } from "./AdvancedDataTable";
+import { AdvancedDataTable, AdvancedDataTableSelectionBadge, ROW_ACTION_BUTTON_BOX_CLASS, type AdvancedDataTableColumn, type AdvancedDataTableDropPosition } from "./AdvancedDataTable";
 import { BusinessLinkActionButton } from "./BusinessLinkActionButton";
-import { EntryCategoryFilter } from "./EntryCategoryFilter";
-import { DEFAULT_ENTRY_CATEGORIES, matchesEntryCategories, type EntryCategory } from "@/lib/entry-categories";
 import { EntryAttachmentWindow } from "./EntryAttachmentWindow";
 import { BasicDetailBatchDeleteButton,
   BasicDetailBatchReconcileButton,
@@ -428,6 +426,8 @@ function buildBasicEntryEditPayload(entry: DetailEntry, currentAccountId?: strin
 type DetailAccountOption = {
   id: string;
   label: string;
+  /** 下拉行右侧的补充说明（账户种类/所有人），与表单下拉同源。 */
+  subLabel?: string | null;
   listLabel?: string | null;
   selectorLabel?: string | null;
   fullLabel?: string | null;
@@ -772,7 +772,6 @@ export function DetailViewClient({
   reconcileEnabled = false,
   reconcileContextAccountId,
   showDateRangeFilter = false,
-  showEntryCategoryFilter = false,
   showMoneyIncomeToggle = false,
   showMoneyIncome = false,
   onMoneyIncomeChange,
@@ -833,12 +832,7 @@ export function DetailViewClient({
   onPageStep?: (delta: 1 | -1) => boolean;
   /** 表头时间筛选器（双滑块）。它是数据范围，独立于 `filters.date`。 */
   showDateRangeFilter?: boolean;
-  /**
-   * 「交易类型」多选下拉（收支 / 转账 / 收益 / 其他）。账户明细页开启；
-   * 报表明细、信用卡账单不开，避免把收益类行默认藏掉。
-   */
-  showEntryCategoryFilter?: boolean;
-  /** 绑定货基的钱包：表头显示「收益」开关，替代「交易类型」下拉。 */
+  /** 绑定货基的钱包：表头显示「收益」开关。 */
   showMoneyIncomeToggle?: boolean;
   /** 收益开关状态；由 URL 的 showMoneyIncome 驱动。 */
   showMoneyIncome?: boolean;
@@ -1111,13 +1105,6 @@ export function DetailViewClient({
     }
     return { id: target.id, ...accountDisplayFallback(target.id, target.name) };
   }, [accountColumnMode, accountColumnTarget, accountDisplayFallback, accountOptionById]);
-  const tf = (key: string, values: Record<string, string | number>) => {
-    let text: string = t(key);
-    for (const [name, value] of Object.entries(values)) {
-      text = text.replaceAll(`{${name}}`, String(value));
-    }
-    return text;
-  };
   const detailCategoryLabel = useCallback((entry: DetailEntry) => {
     const liabilityLabel = liabilityCategoryLabel(entry, accountOptionById, t);
     if (liabilityLabel) return liabilityLabel;
@@ -1140,22 +1127,13 @@ export function DetailViewClient({
   const [refreshedEntries, setRefreshedEntries] = useState<{ accountId: string; entries: DetailEntry[] } | null>(null);
   const [linkingIds, setLinkingIds] = useState<Set<string>>(new Set());
   const entries = refreshedEntries?.accountId === accountId ? refreshedEntries.entries : initialEntries;
-  /**
-   * 「交易类型」筛选（收支 / 转账 / 收益 / 其他）。与列筛选同一层：只影响展示，
-   * 不改服务端分页与合计。默认全选（含收益）——货基每日结转、基金分红都会改余额，
-   * 藏起来余额列就凭空跳动（2026-11-19：电子钱包明细必须看得到每天的收益结转）。
-   */
-  const [entryCategories, setEntryCategories] = useState<EntryCategory[]>(() => [...DEFAULT_ENTRY_CATEGORIES]);
   const visibleEntries = useMemo(
-    () => entries.filter((entry) => {
-      // 「收益」没勾：兜底挡掉货基结转行。「全部」模式的数据来自整份明细缓存，
+    () => (showMoneyIncomeToggle && !showMoneyIncome
+      // 「收益」开关关闭：兜底挡掉货基结转行。「全部」模式的数据来自整份明细缓存，
       // 那条加载路径不带服务端 filters，必须在这里再挡一次才不会漏出来。
-      if (showMoneyIncomeToggle && !showMoneyIncome && entry.source === TRANSACTION_SOURCE_MONEY_INCOME) {
-        return false;
-      }
-      return !showEntryCategoryFilter || matchesEntryCategories(entry, entryCategories);
-    }),
-    [entries, entryCategories, showEntryCategoryFilter, showMoneyIncomeToggle, showMoneyIncome],
+      ? entries.filter((entry) => entry.source !== TRANSACTION_SOURCE_MONEY_INCOME)
+      : entries),
+    [entries, showMoneyIncomeToggle, showMoneyIncome],
   );
   const linkDetailCashFlow = useCallback(async (entry: DetailEntry) => {
     const id = String(entry.id ?? "").trim();
@@ -1466,7 +1444,7 @@ export function DetailViewClient({
       : getColorSchemeFromCookie(document.cookie ?? null);
   const inflowCls = pnlColor(1, colorScheme);
   const outflowCls = pnlColor(-1, colorScheme);
-  const { selectedIds, setSelection } = useBasicDetailSelection();
+  const { selectedIds, setSelection, clear: clearSelection } = useBasicDetailSelection();
   const selectedCount = selectedIds.size;
   // 「对账」锁定余额时用的明细视图账户：单账户明细视图就是 accountId。
   const reconcileAccountId = reconcileContextAccountId ?? accountId;
@@ -2097,7 +2075,12 @@ export function DetailViewClient({
       {/* The reimbursement entry works both ways: with rows picked it pre-seeds the
           create form; without, it opens the account's reimbursement status hub. */}
       {batchExtraActions?.(entries)}
-      {selectedCount > 0 ? <span className="text-xs font-medium text-slate-600">{tf("detail.selectedCount", { count: selectedCount })}</span> : null}
+      {/* 已选徽标钉在批量按钮组右侧：ADT 的 custom 工具栏把状态胶囊排在整个左侧内容之后，
+          会把徽标挤到「流入/流出」汇总后面，所以这里自己渲染同一枚组件（传
+          showSelectionBadgeInCustomToolbar={false} 关掉 ADT 那份，避免出现两个）。 */}
+      {selectedCount > 0 ? (
+        <AdvancedDataTableSelectionBadge count={selectedCount} onClear={clearSelection} />
+      ) : null}
       {selectedCount > 0 ? <span className={`text-xs font-medium ${inflowCls}`}>{t("detail.column.inflow")} {selectedFlowSummary.inflow}</span> : null}
       {selectedCount > 0 ? <span className={`text-xs font-medium ${outflowCls}`}>{t("detail.column.outflow")} {selectedFlowSummary.outflow}</span> : null}
       {selectedCount === 0 && toolbarTitle ? <div className="text-sm font-semibold text-slate-800">{toolbarTitle}</div> : null}
@@ -2116,7 +2099,7 @@ export function DetailViewClient({
     return groups;
   }, [accountId, flowAccountIdOf, isMobileDevice, t, visibleEntries]);
 
-  /** 表头筛选控件：绑定货基的钱包换成「收益」开关，其它账户仍是「交易类型」下拉。 */
+  /** 表头筛选控件：绑定货基的钱包显示「收益」开关。 */
   const tableToolbarFilters = showMoneyIncomeToggle ? (
     <label className="inline-flex cursor-pointer select-none items-center gap-1.5 whitespace-nowrap rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-600">
       <input
@@ -2128,8 +2111,6 @@ export function DetailViewClient({
       />
       <span>{t("detailView.showMoneyIncome")}</span>
     </label>
-  ) : showEntryCategoryFilter ? (
-    <EntryCategoryFilter value={entryCategories} onChange={setEntryCategories} />
   ) : null;
 
   return (
@@ -2317,6 +2298,8 @@ export function DetailViewClient({
         </div>
       ) : toolbarRightContent}
       showTableStateInCustomToolbar={toolbarMode === "custom"}
+      /* 徽标由 customToolbarLeft 钉在批量按钮右侧，ADT 只补筛选胶囊。 */
+      showSelectionBadgeInCustomToolbar={false}
       sortable={sortable}
       sortRows={(rows, currentSort) => {
         // The date column sorts by the canonical detail comparator so the whole

@@ -1,6 +1,7 @@
 import type { PDFParse as PDFParseInstance } from "pdf-parse";
 
 import { STATEMENT_IMPORT_FIELD_HEADERS } from "../statement/header-catalog";
+import { installPdfCanvasShim } from "./pdf-canvas-shim";
 
 /**
  * pdf-parse 2.x 的 API 与 1.x 完全不同：没有默认导出，必须 `new PDFParse(...)`，
@@ -33,6 +34,12 @@ export type PdfExtractResult = {
   passwordRequired: boolean;
   /** 提供了密码但不对（passwordRequired=true 的子集，用于提示「密码不正确」）。 */
   passwordIncorrect: boolean;
+  /**
+   * PDF 确实加密了，但 pdfjs 不认这种加密方式（与密码无关）。
+   *
+   * 这时再让用户输密码没有意义，必须提示「用阅读器打开后另存 / 打印为 PDF 去掉加密」。
+   */
+  encryptionUnsupported: boolean;
 };
 
 const PAGE_JOINER = "\n";
@@ -45,7 +52,29 @@ const EMPTY_RESULT: PdfExtractResult = {
   error: null,
   passwordRequired: false,
   passwordIncorrect: false,
+  encryptionUnsupported: false,
 };
+
+/**
+ * 把 pdfjs 的报错分成「密码问题」与「加密方式不认」两类。
+ *
+ * pdfjs 打不开加密 PDF 有两种完全不同的原因，混成一句「解析失败」会误导用户
+ * （尤其是农商行流水这种默认加密的文件，用户会以为少弹了密码框）：
+ *
+ * - 密码问题：`No password given` / `Incorrect Password` —— 补密码就能解开；
+ * - 加密方式不认：`unsupported encryption algorithm` / `unknown encryption method` /
+ *   `Unknown crypto method` / `Invalid crypt filter name` —— 这是
+ *   `CipherTransformFactory` 在**读取加密字典时就抛的**，跟用户输不输密码无关，
+ *   补密码也没用，只能用 PDF 阅读器另存 / 打印为未加密 PDF 再导入。
+ */
+export function classifyPdfParseError(message: string) {
+  const passwordRequired = /password/i.test(message);
+  return {
+    passwordRequired,
+    passwordIncorrect: passwordRequired && /incorrect password|wrong password/i.test(message),
+    encryptionUnsupported: !passwordRequired && /encrypt|crypto method|crypt filter/i.test(message),
+  };
+}
 
 /**
  * 农商行这类电子流水的文字层是**乱序**的（PDF 内容流顺序与视觉列无关）：
@@ -268,6 +297,9 @@ export async function extractPdfContent(
 
   let parser: PDFParseInstance | null = null;
   try {
+    // 必须在 pdfjs（含它的 fake worker）首次加载前装好：没有原生 canvas 时 pdfjs
+    // 会在图片蒙版描边路径上 `new DOMMatrix()`，缺了这个符号所有 PDF 都解析不了。
+    installPdfCanvasShim();
     const { PDFParse } = await import("pdf-parse");
     // 传副本，避免 worker 的 transfer 把调用方的 Buffer 挪走。
     parser = new PDFParse({
@@ -306,6 +338,7 @@ export async function extractPdfContent(
       return {
         text: statementTableText, tables, pageCount, hasTextLayer, error: null,
         passwordRequired: false, passwordIncorrect: false,
+        encryptionUnsupported: false,
       };
     }
     // 有些账单文字层只散落着页眉，真正的明细全在表格里。
@@ -315,21 +348,21 @@ export async function extractPdfContent(
         return {
           text: tableText, tables, pageCount, hasTextLayer, error: null,
           passwordRequired: false, passwordIncorrect: false,
+          encryptionUnsupported: false,
         };
       }
     }
     return {
       text, tables, pageCount, hasTextLayer, error: null,
       passwordRequired: false, passwordIncorrect: false,
+      encryptionUnsupported: false,
     };
   } catch (error) {
     const message = errorMessage(error) || "unknown error";
-    const passwordRequired = /password/i.test(message);
     return {
       ...EMPTY_RESULT,
       error: message,
-      passwordRequired,
-      passwordIncorrect: passwordRequired && /incorrect password|wrong password/i.test(message),
+      ...classifyPdfParseError(message),
     };
   } finally {
     if (parser) await parser.destroy().catch(() => undefined);

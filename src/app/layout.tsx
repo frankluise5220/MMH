@@ -6,6 +6,7 @@ import { IconSprite } from "@/components/IconSprite";
 import { ModalDragController } from "@/components/ModalDragController";
 import { PwaServiceWorkerRegistration } from "@/components/PwaServiceWorkerRegistration";
 import { ClientLogCollector } from "@/components/ClientLogCollector";
+import { HintLayer } from "@/components/HintLayer";
 import { I18nProvider } from "@/components/I18nProvider";
 import { DeviceKindProvider } from "@/components/DeviceKindProvider";
 import PreferencesSync from "@/components/PreferencesSync";
@@ -268,6 +269,7 @@ export default async function RootLayout({
         </DeviceKindProvider>
         <PreferencesSync />
         <ModalDragController />
+        <HintLayer />
         <PwaServiceWorkerRegistration />
         <ClientLogCollector />
         <Script

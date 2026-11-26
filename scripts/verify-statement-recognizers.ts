@@ -40,7 +40,8 @@ import {
 } from "../src/lib/import-template-sample";
 import { parseEmlSheets, parseHtmlSheets } from "../src/lib/statement/eml-sheet-reader";
 import { readStatementSheetRows } from "../src/lib/statement/statement-sheet-reader";
-import { buildStatementTableText } from "../src/lib/mail/pdf";
+import { buildStatementTableText, classifyPdfParseError } from "../src/lib/mail/pdf";
+import { installPdfCanvasShim } from "../src/lib/mail/pdf-canvas-shim";
 import { STATEMENT_IMPORT_FIELD_HEADERS } from "../src/lib/statement/header-catalog";
 import { parseStatementTemplateRows } from "../src/lib/statement/excel-preview";
 
@@ -577,6 +578,69 @@ check("PDF 表格：备注里的「商户名 + 日期」不被当成页脚删掉
   ]];
   const text = buildStatementTableText(tables, PDF_FOOTER)!;
   assert.ok(text.includes("京东商城业务"), "商户名必须保留");
+});
+
+// 加密 PDF 的两类失败必须分开：密码问题要给输入框，加密方式不认要给「另存为未加密 PDF」
+// 的引导。混成一句「解析失败 / 文件可能已损坏」会让用户以为少弹了密码框（农商行流水默认加密）。
+check("PDF 报错分类：密码问题 ≠ 加密方式不受支持", () => {
+  assert.deepEqual(classifyPdfParseError("No password given"), {
+    passwordRequired: true,
+    passwordIncorrect: false,
+    encryptionUnsupported: false,
+  });
+  assert.deepEqual(classifyPdfParseError("Incorrect Password"), {
+    passwordRequired: true,
+    passwordIncorrect: true,
+    encryptionUnsupported: false,
+  });
+  for (const message of [
+    "unsupported encryption algorithm",
+    "unknown encryption method",
+    "Unknown crypto method",
+    "Invalid crypt filter name",
+  ]) {
+    const result = classifyPdfParseError(message);
+    assert.equal(result.passwordRequired, false, `${message} 不该弹密码框`);
+    assert.equal(result.encryptionUnsupported, true, `${message} 应判为加密方式不受支持`);
+  }
+  const other = classifyPdfParseError("Invalid PDF structure");
+  assert.equal(other.passwordRequired, false);
+  assert.equal(other.encryptionUnsupported, false, "普通解析错误不能被说成加密问题");
+});
+
+// 2026-11-26 生产事故：0.1.91 把 pdf-parse 1.x 升到 2.x 之后，standalone 产物里
+// 只有 @napi-rs/canvas 的 JS、没有平台二进制（nft 追踪不到它的动态 require），pdfjs
+// 给图片蒙版（银行流水水印）描边时 `new DOMMatrix()` 直接 ReferenceError，所有 PDF
+// 附件都报「文件可能已损坏」，连加密 PDF 的密码框都不弹。shim 必须在没有原生 canvas
+// 的环境里补出可用矩阵。
+check("PDF 解析：没有原生 canvas 时自补 DOMMatrix", () => {
+  const scope = globalThis as Record<string, unknown>;
+  const original = scope.DOMMatrix;
+  delete scope.DOMMatrix;
+  try {
+    installPdfCanvasShim();
+    type Matrix = {
+      a: number;
+      b: number;
+      c: number;
+      d: number;
+      e: number;
+      f: number;
+      scaleSelf: (sx: number, sy?: number) => Matrix;
+      translateSelf: (tx?: number, ty?: number) => Matrix;
+    };
+    const MatrixCtor = scope.DOMMatrix as unknown as new () => Matrix;
+    assert.equal(typeof MatrixCtor, "function");
+    // pdfjs 的唯一用法：new DOMMatrix().scaleSelf(1/width, -1/height).translateSelf(0, -height)
+    const matrix = new MatrixCtor().scaleSelf(1 / 100, -1 / 50).translateSelf(0, -50);
+    assert.ok(Math.abs(matrix.a - 0.01) < 1e-9, "a 必须等于 1/width");
+    assert.ok(Math.abs(matrix.d + 0.02) < 1e-9, "d 必须等于 -1/height");
+    assert.ok(Math.abs(matrix.f - 1) < 1e-9, "y 轴翻转后 f 必须回到 1");
+    assert.equal(matrix.e, 0);
+  } finally {
+    if (original === undefined) delete scope.DOMMatrix;
+    else scope.DOMMatrix = original;
+  }
 });
 
 console.log(`\ncheck:recognizer ok（${assertionCount} 条断言）`);

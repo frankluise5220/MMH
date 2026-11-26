@@ -51,10 +51,18 @@ const nextConfig: NextConfig = {
   // into the standalone output explicitly.
   outputFileTracingIncludes: {
     "/api/v1/settings/backup/auto": ["./node_modules/smb3-client/**/*"],
-    // pdf-parse 被 serverExternalPackages 排除出打包后，只能靠 nft 把它和
-    // 原生 canvas 复制进 standalone；否则打包产物里 require("pdf-parse") 直接
-    // 失败，PDF 附件又会变成「抽不出文字」。
+    // pdf-parse 被 serverExternalPackages 排除出打包后，只能靠 nft 把它和 pdfjs 的
+    // worker 复制进 standalone；否则打包产物里 require("pdf-parse") 直接失败，
+    // PDF 附件又会变成「抽不出文字」。两个用到它的路由都要列出来。
+    // 注意：`@napi-rs/canvas` 复制进来只有 JS，平台二进制（canvas-linux-x64-gnu）
+    // 是运行时动态 require 的，nft 追不到，而它解压后 31MB 会顶爆镜像单层预算——
+    // 缺 DOMMatrix 由 src/lib/mail/pdf-canvas-shim.ts 在 JS 侧补齐，不要指望这里。
     "/api/v1/email/imap/fetch": [
+      "./node_modules/pdf-parse/**/*",
+      "./node_modules/pdfjs-dist/**/*",
+      "./node_modules/@napi-rs/canvas/**/*",
+    ],
+    "/api/v1/statement/parse-pdf": [
       "./node_modules/pdf-parse/**/*",
       "./node_modules/pdfjs-dist/**/*",
       "./node_modules/@napi-rs/canvas/**/*",

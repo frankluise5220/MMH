@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 
 import {
   AdvancedDataTable,
+  AdvancedDataTableSelectionBadge,
   type AdvancedDataTableColumn,
   type AdvancedDataTableSummaryRow,
 } from "./AdvancedDataTable";
@@ -448,12 +449,11 @@ export function BondShell({
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
-                  <span
-                    className="h-6 rounded border border-blue-200 bg-blue-50 px-2 text-xs font-medium leading-6 tabular-nums text-blue-700"
+                  <AdvancedDataTableSelectionBadge
+                    count={selectedEntryIds.size}
+                    onClear={() => setSelectedEntryIds(new Set())}
                     title={t("fundShell.selectedTitle", { count: selectedEntryIds.size })}
-                  >
-                    {t("table.selectedCount", { count: selectedEntryIds.size })}
-                  </span>
+                  />
                   <span className="mx-1 h-4 w-px bg-slate-200" />
                 </div>
               ) : null}

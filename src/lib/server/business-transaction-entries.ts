@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
 import { isWealthHoldingCleared, resetWealthHoldingBucket } from "@/lib/invest-balance";
 import { entryBusinessTypeLabel } from "@/lib/server/entry-business-link";
+import { attachEntryTagsToRows } from "@/lib/server/entry-tags";
 import { optionalPrismaFindMany } from "@/lib/server/optional-prisma-delegate";
 import { calculateWealthCashDividendProfit, calculateWealthPositionsFromEntries, inferWealthUnitNav } from "@/lib/wealth-position";
 import { normalizeFundUnitsDecimals } from "@/lib/fund/unit-precision";
@@ -356,6 +357,9 @@ export async function loadWealthTransactionEntryLike(params: {
       ...linkSummary(row.EntryBusinessLink),
     };
   });
+
+  // 理财明细与基金明细共用同一张明细表（含「标签」列与批量改标签），标签存在资金腿上。
+  await attachEntryTagsToRows(projectedRows);
 
   return projectedRows.sort((a, b) => {
     const dateDiff = new Date(a.date as any).getTime() - new Date(b.date as any).getTime();

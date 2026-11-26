@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Undo2 } from "lucide-react";
 
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
+import { useHint } from "@/components/HintLayer";
 import {
   dispatchFinanceDataChanged,
   FINANCE_DATA_CHANGED_EVENT,
@@ -191,6 +192,8 @@ export function UndoLastOperationButton({
       ? t("undo.titleWithMore", { label: undoLabel(state, t), count: undoCount })
       : t("undo.title", { label: undoLabel(state, t) })
     : t("undo.noOperations");
+  const hint = useHint("undo-last-operation", [{ id: "undo", label: title, wrap: true }]);
+  const messageHint = useHint("undo-last-operation-message", message ? [{ id: "message", label: message, wrap: true }] : []);
   if (compact) {
     return (
       <button
@@ -198,7 +201,7 @@ export function UndoLastOperationButton({
         onClick={undo}
         disabled={!state?.canUndo || loading || confirming}
         className={className ?? "flex h-10 w-10 items-center justify-center rounded-xl text-slate-500 transition-colors hover:bg-white hover:text-slate-900 disabled:cursor-not-allowed disabled:text-slate-300"}
-        title={title}
+        {...hint}
         aria-label={title}
       >
         <Undo2 size={iconSize} />
@@ -213,12 +216,12 @@ export function UndoLastOperationButton({
         onClick={undo}
         disabled={!state?.canUndo || loading || confirming}
         className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-slate-600 transition-colors hover:bg-white hover:text-slate-900 disabled:cursor-not-allowed disabled:text-slate-300"
-        title={title}
+        {...hint}
       >
         <Undo2 size={18} />
         <span className="min-w-0 flex-1 truncate text-left">{loading ? t("undo.undoing") : t("undo.undoLastStep")}</span>
       </button>
-      {message ? <div className="truncate px-3 pt-1 text-[10px] text-slate-500" title={message}>{message}</div> : null}
+      {message ? <div className="truncate px-3 pt-1 text-[10px] text-slate-500" {...messageHint}>{message}</div> : null}
     </div>
   );
 }

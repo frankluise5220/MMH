@@ -929,3 +929,20 @@ html {
   background: rgba(51, 65, 85, 0.56);
   background-clip: padding-box;
 }
+
+/* 统一提示系统（src/components/HintLayer.tsx）：全站 hover/focus 提示共用同一条入场动画。
+   120ms 的 2px 位移 + 淡入，够轻，不至于在密集表头上闪。 */
+@keyframes mmh-hint-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.mmh-hint-pill {
+  animation: mmh-hint-in 120ms ease-out both;
+}

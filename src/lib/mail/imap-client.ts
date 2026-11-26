@@ -27,6 +27,7 @@ type MailListItem = { uid: number; subject: string; from: string; date: string; 
  */
 export type MailAttachmentParseErrorCode =
   | "pdf_password_required"
+  | "pdf_encryption_unsupported"
   | "pdf_parse_failed"
   | "pdf_no_text_layer"
   | "spreadsheet_parse_failed";
@@ -1092,22 +1093,30 @@ export async function fetchMailDetail(
           };
         }
         // 加密 PDF 必须单独标记：前端要给出密码输入框，而不是「没有文字层」这种误导提示。
+        // 「加密方式不认」是另一类问题：pdfjs 在读取加密字典时就拒绝，输密码也解不开，
+        // 界面要给「另存为未加密 PDF」的引导，不能说成文件已损坏。
         const passwordRequired = pdf.passwordRequired;
+        const encryptionUnsupported = pdf.encryptionUnsupported;
+        const parseErrorCode: MailAttachmentParseErrorCode = passwordRequired
+          ? "pdf_password_required"
+          : encryptionUnsupported
+          ? "pdf_encryption_unsupported"
+          : pdf.error
+          ? "pdf_parse_failed"
+          : "pdf_no_text_layer";
         return {
           id: String(index),
           filename,
           contentType,
           size: attachment.size ?? content.length,
           passwordRequired: passwordRequired || undefined,
-          parseErrorCode: passwordRequired
-            ? "pdf_password_required"
-            : pdf.error
-            ? "pdf_parse_failed"
-            : "pdf_no_text_layer",
+          parseErrorCode,
           parseError: passwordRequired
             ? pdf.passwordIncorrect
               ? "The PDF password is incorrect."
               : "This PDF is password-protected."
+            : encryptionUnsupported
+            ? `This PDF uses an unsupported encryption method: ${pdf.error}`
             : pdf.error
             ? `PDF text extraction failed: ${pdf.error}`
             : "No text layer found: this PDF is likely a scanned image.",

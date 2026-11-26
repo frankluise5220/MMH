@@ -7,11 +7,13 @@ import { useRouter } from "next/navigation";
 import {
   ADVANCED_TABLE_HEAD_SURFACE_CLASS,
   AdvancedDataTable,
+  AdvancedDataTableSelectionBadge,
   ROW_ACTION_BUTTON_BOX_CLASS,
   type AdvancedDataTableColumn,
   type AdvancedDataTableSummaryRow,
 } from "./AdvancedDataTable";
-import { BatchReplacePopoverButton, type BatchReplaceFieldConfig } from "./BatchReplacePopoverButton";
+import { BatchReplacePopoverButton, type BatchReplaceFieldConfig, type BatchReplaceOption } from "./BatchReplacePopoverButton";
+import { BATCH_ACCOUNT_SELECT_BEHAVIOR, toBatchAccountOptions } from "@/lib/batch-account-options";
 import { BusinessLinkActionButton } from "./BusinessLinkActionButton";
 import { DepositPayInterestModal, type PayInterestLotInfo } from "./DepositPayInterestModal";
 import { DetailTablePaginationControls } from "./DetailTablePaginationControls";
@@ -114,6 +116,7 @@ export function DepositShell({
   entries,
   lots,
   cashAccounts = [],
+  cashAccountSSOptions,
   renewAction,
   payInterestAction,
 }: {
@@ -124,7 +127,9 @@ export function DepositShell({
   institutionId?: string | null;
   entries: DepositEntry[];
   lots: DepositLot[];
-  cashAccounts?: Array<{ id: string; label: string }>;
+  cashAccounts?: Array<{ id: string; label: string; subLabel?: string; title?: string; hoverTitle?: string }>;
+  /** 与表单同源的账户下拉选项（带副标题、悬浮全名与分组），批量修改账户时使用 */
+  cashAccountSSOptions?: ReadonlyArray<any>;
   renewAction?: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
   payInterestAction?: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
 }) {
@@ -322,17 +327,31 @@ export function DepositShell({
     goEntryPage(1);
   }, [selectedLotId, goEntryPage]);
 
+  const cashBatchAccountOptions = useMemo<BatchReplaceOption[]>(() => {
+    const allowedIds = new Set(cashAccounts.map((account) => String(account.id)));
+    return toBatchAccountOptions(cashAccountSSOptions, cashAccounts, allowedIds);
+  }, [cashAccountSSOptions, cashAccounts]);
+
   const batchFields = useMemo<BatchReplaceFieldConfig<DepositBatchField>[]>(() => [
     { value: "date", label: t("detail.column.date"), kind: "date" },
     {
       value: "cashAccountId",
       label: t("txForm.cashAccount"),
-      kind: "select",
-      options: [{ value: "", label: t("fundShell.selectAccount") }, ...cashAccounts.map((account) => ({ value: account.id, label: account.label }))],
+      kind: "smartSelect",
+      options: cashBatchAccountOptions,
+      placeholder: t("fundShell.selectAccount"),
+      smartSelectBehavior: BATCH_ACCOUNT_SELECT_BEHAVIOR,
     },
     { value: "amount", label: t("txForm.amount"), kind: "number", placeholder: t("fundShell.batch.amountPlaceholder") },
-    { value: "remark", label: t("detail.column.remark"), kind: "text", placeholder: t("stockPanel.batchNotePlaceholder"), allowEmpty: true },
-  ], [cashAccounts, t]);
+    {
+      value: "remark",
+      label: t("detail.column.remark"),
+      kind: "text",
+      placeholder: t("batchReplace.remarkPlaceholder"),
+      hint: t("batchReplace.remarkHint"),
+      allowEmpty: true,
+    },
+  ], [cashBatchAccountOptions, t]);
 
   async function applyBatch(field: DepositBatchField, value: string) {
     const ids = Array.from(selectedEntryIds);
@@ -661,12 +680,11 @@ export function DepositShell({
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
-                  <span
-                    className="h-6 rounded border border-blue-200 bg-blue-50 px-2 text-xs font-medium leading-6 tabular-nums text-blue-700"
+                  <AdvancedDataTableSelectionBadge
+                    count={selectedEntryIds.size}
+                    onClear={() => setSelectedEntryIds(new Set())}
                     title={t("fundShell.selectedTitle", { count: selectedEntryIds.size })}
-                  >
-                    {t("table.selectedCount", { count: selectedEntryIds.size })}
-                  </span>
+                  />
                   <span className="mx-1 h-4 w-px bg-slate-200" />
                 </div>
               ) : null}

@@ -9,6 +9,7 @@ import {
   type DisplayLanguage,
 } from "@/lib/client/appPreferences";
 import { useI18n } from "@/lib/i18n";
+import { useHint } from "@/components/HintLayer";
 
 const LANGUAGE_OPTIONS: Array<{ value: DisplayLanguage; iconKey: string; labelKey: string }> = [
   { value: "zh-CN", iconKey: "languageSwitcher.icon.zhCN", labelKey: "languageSwitcher.name.zhCN" },
@@ -59,6 +60,8 @@ export function LanguageSwitcher() {
     next: t(next.labelKey),
   });
 
+  const hint = useHint("language-switcher", [{ id: "switch", label: title, wrap: true }]);
+
   return (
     <button
       type="button"
@@ -66,7 +69,7 @@ export function LanguageSwitcher() {
         event.stopPropagation();
         switchLanguage(next.value);
       }}
-      title={title}
+      {...hint}
       aria-label={title}
       className="inline-flex h-7 min-w-7 items-center justify-center rounded-md px-1.5 text-[11px] font-semibold text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
     >

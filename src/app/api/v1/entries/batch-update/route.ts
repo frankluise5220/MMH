@@ -3,6 +3,7 @@ import { AccountKind, TransactionType } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { evaluateAmountFieldExpression, type AmountFieldReferenceValues } from "@/lib/amount-field-expression";
 import { evaluateArithmeticExpression } from "@/lib/arithmetic-expression";
+import { evaluateRemarkExpression } from "@/lib/remark-expression";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { recalcPreciousMetalPositions } from "@/lib/metal/recalcPosition";
@@ -47,7 +48,7 @@ import { isDepositAccount, isDepositPostingCategoryAllowed, isIncomeExpensePosti
  *     institution?: string;    // counterparty institution name/short name, pass empty string to clear
  *     tagId?: string;           // readable Tag.id, pass empty string to clear all tags (replace semantics)
  *     appendTagId?: string;     // readable Tag.id to ADD to the entry's existing tags (existing tags are kept, deduped); empty string is ignored
- *     remark?: string;         // note, pass empty string to clear
+ *     remark?: string;         // note; supports `{备注}+文字` / `{备注}-文字` formulas, pass empty string to clear
  *     fundConfirmDate?: string;// confirm date YYYY-MM-DD or T+N offset, pass empty string to clear
  *     fundArrivalDate?: string;// arrival date YYYY-MM-DD or T+N offset, pass empty string to clear
  *     fundFee?: string | number;// fund fee amount, pass empty string to clear
@@ -636,7 +637,9 @@ export async function POST(req: NextRequest) {
       }
 
       if (item.remark !== undefined) {
-        const remark = String(item.remark);
+        // 备注支持 `{备注}+文字` / `{备注}-文字` 公式：按该行现有备注逐行求值，
+        // 不含 `{备注}` 时仍是整体覆盖（空串 = 清空）。
+        const remark = evaluateRemarkExpression(String(item.remark), existing.note);
         data.note = remark || null;
         changed.push({ id, date: ymd(existing.date), oldValue: existing.note ?? "", newValue: remark, field: "remark" });
       }

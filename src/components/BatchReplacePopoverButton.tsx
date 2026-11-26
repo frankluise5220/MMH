@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNod
 import { CalcInput } from "@/components/CalcInput";
 import { DateStepper } from "@/components/DateStepper";
 import { useDerivedLayerZIndex } from "@/components/ModalLayer";
+import { useHint } from "@/components/HintLayer";
 import { SmartSelect, type SmartSelectOption, type SmartSelectProps } from "@/components/SmartSelect";
 import { useI18n } from "@/lib/i18n";
 
@@ -94,6 +95,12 @@ export function BatchReplacePopoverButton<Field extends string>({
 
   const fieldConfig = useMemo(() => fields.find((item) => item.value === field) ?? fields[0], [field, fields]);
   const disabled = targetCount === 0 || fields.length === 0;
+  // 铅笔按钮是纯图标，说明走统一提示层（禁用时讲清为什么点不动）。
+  const triggerHint = useHint("batch-replace-trigger", [{
+    id: "batch-replace",
+    label: disabled ? effectiveDisabledTitle : (buttonTitle ?? t("batchReplace.title", { label: effectiveTargetLabel, count: targetCount })),
+    wrap: true,
+  }]);
   const canApply = Boolean(fieldConfig) && !submitting && targetCount > 0 && (fieldConfig.allowEmpty || value.trim().length > 0);
   const preferredPanelWidth = useMemo(() => {
     if (fieldConfig?.kind !== "smartSelect") return 360;
@@ -204,8 +211,8 @@ export function BatchReplacePopoverButton<Field extends string>({
         onClick={() => setOpen((current) => !current)}
         disabled={disabled}
         className={buttonClassName ?? "flex h-8 w-8 items-center justify-center rounded-md border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-40"}
-        title={disabled ? effectiveDisabledTitle : (buttonTitle ?? t("batchReplace.title", { label: effectiveTargetLabel, count: targetCount }))}
         aria-label={disabled ? effectiveDisabledTitle : (buttonTitle ?? t("batchReplace.title", { label: effectiveTargetLabel, count: targetCount }))}
+        {...triggerHint}
       >
         <Pencil className="h-4 w-4" />
       </button>
@@ -225,7 +232,6 @@ export function BatchReplacePopoverButton<Field extends string>({
                   type="button"
                   onClick={() => setOpen(false)}
                   className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-slate-400 hover:bg-slate-100 hover:text-slate-600"
-                  title={t("table.close")}
                   aria-label={t("table.close")}
                 >
                   <X className="h-4 w-4" />

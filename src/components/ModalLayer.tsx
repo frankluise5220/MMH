@@ -17,6 +17,17 @@ const ModalLayerContext = createContext(0);
  */
 const openLayerZIndexes = new Set<number>();
 
+/**
+ * 覆盖在「当前最上层窗口」之上的层级：提示药丸、拖拽幽灵这类必须浮在窗口内的元素用。
+ * 提示层是 portal 到 body 的，写死一个固定 z-index 会被窗口遮罩压住（表现为窗口里的表头
+ * 悬停没有任何提示）。
+ */
+export function getOverlayLayerZIndex(fallback = 120) {
+  if (typeof window === "undefined") return fallback;
+  const top = peekOpenLayerZIndex();
+  return top > 0 ? top + MODAL_LAYER_STEP : fallback;
+}
+
 function isFullViewportOverlay(el: Element) {
   if (typeof window === "undefined") return false;
   const r = el.getBoundingClientRect();

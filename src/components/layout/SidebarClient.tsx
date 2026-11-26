@@ -2,7 +2,7 @@
 
 import Link, { useLinkStatus } from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useState, useEffect, useMemo, useRef, useCallback, startTransition, type MouseEvent as ReactMouseEvent } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback, startTransition, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type FocusEvent as ReactFocusEvent } from "react";
 import {
   LayoutDashboard,
   Users,
@@ -27,6 +27,7 @@ import {
   X,
 } from "lucide-react";
 import { MmhLogo } from "@/components/MmhLogo";
+import { useHintTrigger, type HintItem } from "@/components/HintLayer";
 import { withBasePath, withoutBasePath } from "@/lib/base-path";
 import { LedgerSwitcher } from "../LedgerSwitcher";
 import { NewLedgerSetupCheck } from "../NewLedgerSetupCheck";
@@ -537,6 +538,32 @@ export function SidebarClient({
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const { t } = useI18n();
+  // 侧边栏的提示锚点几乎全是动态的（每个分区、分组、账户行、导航项都是一个新锚点），
+  // 没法为每个锚点单独调 useHint，所以统一用一个触发器 + 一个 props 工厂：延迟、配色、
+  // 收起规则与表格表头完全同一套，不允许在这里另写 title / 原生 tooltip。
+  const hintTrigger = useHintTrigger();
+  const hintProps = useCallback(
+    (key: string, label: string, options?: { icon?: HintItem["icon"]; wrap?: boolean }) => ({
+      onPointerEnter: (event: ReactPointerEvent<HTMLElement>) => {
+        if (event.pointerType === "touch") return;
+        hintTrigger.enter(event.currentTarget, {
+          key,
+          items: [{ id: "hint", label, icon: options?.icon, wrap: options?.wrap }],
+        });
+      },
+      onPointerLeave: () => hintTrigger.leave(key),
+      onPointerDown: () => hintTrigger.press(key),
+      onFocus: (event: ReactFocusEvent<HTMLElement>) => {
+        if (event.target !== event.currentTarget) return;
+        hintTrigger.enter(event.currentTarget, {
+          key,
+          items: [{ id: "hint", label, icon: options?.icon, wrap: options?.wrap }],
+        });
+      },
+      onBlur: () => hintTrigger.leave(key),
+    }),
+    [hintTrigger],
+  );
   const currentAppUrl = useMemo(() => {
     const query = searchParams.toString();
     return query ? `${pathname}?${query}` : pathname;
@@ -1628,7 +1655,10 @@ export function SidebarClient({
     >
       <div className="border-b border-slate-100 px-3 py-2">
         <div className="text-[10px] font-medium text-slate-400">{t("sidebarClient.currentUser")}</div>
-        <div className="mt-0.5 truncate text-xs font-semibold text-slate-800" title={user?.name || t("sidebarClient.user")}>
+        <div
+          className="mt-0.5 truncate text-xs font-semibold text-slate-800"
+          {...hintProps("sidebar:current-user", user?.name || t("sidebarClient.user"), { wrap: true })}
+        >
           {user?.name || t("sidebarClient.user")}
         </div>
       </div>
@@ -1655,7 +1685,7 @@ export function SidebarClient({
               type="button"
               onClick={() => setSwitcherOpen((open) => !open)}
               className="mb-1 flex h-12 w-12 items-center justify-center rounded-2xl transition-colors hover:bg-slate-100"
-              title={t("ledgerSwitch.switchLedger")}
+              {...hintProps("sidebar:collapsed-ledger", t("ledgerSwitch.switchLedger"))}
             >
               <MmhLogo size={32} />
             </button>
@@ -1664,7 +1694,10 @@ export function SidebarClient({
               type="button"
               onClick={toggleUserMenu}
               className={collapsedNavCls(userMenuOpen)}
-              title={user?.name ? t("sidebarClient.userMenuWithName", { name: user.name }) : t("sidebarClient.userMenu")}
+              {...hintProps(
+                "sidebar:collapsed-user",
+                user?.name ? t("sidebarClient.userMenuWithName", { name: user.name }) : t("sidebarClient.userMenu"),
+              )}
               aria-haspopup="menu"
               aria-expanded={userMenuOpen}
             >
@@ -1675,7 +1708,7 @@ export function SidebarClient({
             <button
               onClick={toggleSidebarCollapsed}
               className="flex h-10 w-10 items-center justify-center rounded-xl text-slate-500 transition-colors hover:bg-white hover:text-slate-900"
-              title={t("common.expand")}
+              {...hintProps("sidebar:collapsed-expand", t("common.expand"))}
             >
               <PanelLeftOpen size={18} />
             </button>
@@ -1688,22 +1721,22 @@ export function SidebarClient({
           </div>
 
           <nav className="mt-5 flex min-h-0 flex-1 flex-col items-center gap-1">
-          <Link href="/overview" className={collapsedNavCls(pathname.startsWith("/overview"))} title={t("nav.overview")}>
+          <Link href="/overview" className={collapsedNavCls(pathname.startsWith("/overview"))} {...hintProps("sidebar:collapsed-overview", t("nav.overview"))}>
             <LayoutDashboard size={18} />
           </Link>
           {showAllCashEntries ? (
-            <Link href="/?view=allcash" className={collapsedNavCls(pathname === "/" && selectedView === "allcash")} title={t("nav.allCashEntries")}>
+            <Link href="/?view=allcash" className={collapsedNavCls(pathname === "/" && selectedView === "allcash")} {...hintProps("sidebar:collapsed-allcash", t("nav.allCashEntries"))}>
               <List size={18} />
             </Link>
           ) : null}
-          <Link href="/regular-invest" className={collapsedNavCls(pathname.startsWith("/regular-invest"))} title={t("nav.scheduledTasks")}>
+          <Link href="/regular-invest" className={collapsedNavCls(pathname.startsWith("/regular-invest"))} {...hintProps("sidebar:collapsed-scheduled", t("nav.scheduledTasks"))}>
             <CalendarClock size={18} />
           </Link>
-          <Link href="/reports" className={collapsedNavCls(pathname.startsWith("/reports"))} title={t("nav.reports")}>
+          <Link href="/reports" className={collapsedNavCls(pathname.startsWith("/reports"))} {...hintProps("sidebar:collapsed-reports", t("nav.reports"))}>
             <Table2 size={18} />
           </Link>
           {reimbursementEntryVisible ? (
-            <Link href="/reimbursements" className={collapsedNavCls(pathname.startsWith("/reimbursements"))} title={t("sidebar.section.reimbursements")}>
+            <Link href="/reimbursements" className={collapsedNavCls(pathname.startsWith("/reimbursements"))} {...hintProps("sidebar:collapsed-reimbursements", t("sidebar.section.reimbursements"))}>
               <ReceiptText size={18} />
             </Link>
           ) : null}
@@ -1712,25 +1745,25 @@ export function SidebarClient({
               type="button"
               onClick={dispatchFirstUseGuideOpen}
               className={collapsedNavCls(false)}
-              title={t("nav.firstUseGuide")}
+              {...hintProps("sidebar:collapsed-guide", t("nav.firstUseGuide"))}
             >
               <Compass size={18} />
             </button>
           ) : null}
-          <Link href="/accounts" className={collapsedNavCls(pathname.startsWith("/accounts") || (pathname === "/" && selectedView !== "allcash" && !isRootInvestmentView))} title={t("nav.accounts")}>
+          <Link href="/accounts" className={collapsedNavCls(pathname.startsWith("/accounts") || (pathname === "/" && selectedView !== "allcash" && !isRootInvestmentView))} {...hintProps("sidebar:collapsed-accounts", t("nav.accounts"))}>
             <Landmark size={18} />
           </Link>
           <Link
             href="/accounts?tab=credit"
             className={collapsedNavCls(pathname.startsWith("/accounts") && searchParams.get("tab") === "credit")}
-            title={t("nav.creditCards")}
+            {...hintProps("sidebar:collapsed-credit", t("nav.creditCards"))}
           >
             <CreditCard size={18} />
           </Link>
-          <Link href="/investments" className={collapsedNavCls(isRootInvestmentView || pathname.startsWith("/investments") || pathname.startsWith("/invest") || pathname.startsWith("/funds"))} title={t("nav.investments")}>
+          <Link href="/investments" className={collapsedNavCls(isRootInvestmentView || pathname.startsWith("/investments") || pathname.startsWith("/invest") || pathname.startsWith("/funds"))} {...hintProps("sidebar:collapsed-investments", t("nav.investments"))}>
             <BarChart3 size={18} />
           </Link>
-          <Link href="/liabilities" className={collapsedNavCls(pathname.startsWith("/liabilities"))} title={t("nav.liabilities")}>
+          <Link href="/liabilities" className={collapsedNavCls(pathname.startsWith("/liabilities"))} {...hintProps("sidebar:collapsed-liabilities", t("nav.liabilities"))}>
             <Landmark size={18} />
           </Link>
         </nav>
@@ -1757,7 +1790,7 @@ export function SidebarClient({
             type="button"
             onClick={() => setSwitcherOpen((open) => !open)}
             className="flex h-9 w-9 items-center justify-center rounded-2xl transition-colors hover:bg-slate-100"
-            title={t("ledgerSwitch.switchLedger")}
+            {...hintProps("sidebar:ledger-switcher", t("ledgerSwitch.switchLedger"))}
           >
             <MmhLogo size={26} />
           </button>
@@ -1766,7 +1799,10 @@ export function SidebarClient({
             type="button"
             onClick={toggleUserMenu}
             className={`flex h-7 min-w-0 max-w-[92px] items-center gap-1 rounded-md px-1.5 text-xs font-medium transition-colors ${userMenuOpen ? "bg-slate-100 text-slate-800" : "text-slate-500 hover:bg-slate-100 hover:text-slate-800"}`}
-            title={user?.name ? t("sidebarClient.userMenuWithName", { name: user.name }) : t("sidebarClient.userMenu")}
+            {...hintProps(
+              "sidebar:user-menu",
+              user?.name ? t("sidebarClient.userMenuWithName", { name: user.name }) : t("sidebarClient.userMenu"),
+            )}
             aria-haspopup="menu"
             aria-expanded={userMenuOpen}
           >
@@ -1783,7 +1819,7 @@ export function SidebarClient({
             <Link
               href="/settings/feedback"
               className="flex h-7 w-6 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800"
-              title={t("settings.feedback.buttonTitle")}
+              {...hintProps("sidebar:feedback", t("settings.feedback.buttonTitle"))}
               aria-label={t("settings.feedback.buttonTitle")}
             >
               <MessageSquare size={15} />
@@ -1795,7 +1831,7 @@ export function SidebarClient({
             <button
               onClick={toggleSidebarCollapsed}
               className="flex h-7 w-7 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
-              title={t("common.collapse")}
+              {...hintProps("sidebar:collapse", t("common.collapse"))}
             >
               <PanelLeftClose size={18} />
             </button>
@@ -1868,7 +1904,7 @@ export function SidebarClient({
                 type="button"
                 onClick={closeAccountFilter}
                 className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
-                title={t("sidebar.accountFilterClose")}
+                {...hintProps("sidebar:account-filter-close", t("sidebar.accountFilterClose"))}
                 aria-label={t("sidebar.accountFilterClose")}
               >
                 <X className="h-3.5 w-3.5" />
@@ -1881,15 +1917,16 @@ export function SidebarClient({
                   type="button"
                   onClick={cycleOwnerFilter}
                   className="truncate text-[11px] font-medium tracking-[0.08em] text-slate-400 transition-colors hover:text-slate-600"
-                  title={`${t("sidebar.ownerFilterTitle")}：${selectedOwnerFilter || t("common.all")}`}
+                  {...hintProps("sidebar:owner-filter", `${t("sidebar.ownerFilterTitle")}：${selectedOwnerFilter || t("common.all")}`)}
                 >
                   {`${t("common.account")}·${selectedOwnerFilter || t("common.all")}`}
                 </button>
               </div>
-              {/* 隐形双击区：双击标题右侧空白打开账户筛选输入框 */}
+              {/* 隐形双击区：双击标题右侧空白打开账户筛选输入框。手势本身看不见，只能靠提示讲。 */}
               <div
                 className="h-6 min-w-0 flex-1 cursor-text"
                 onDoubleClick={openAccountFilter}
+                {...hintProps("sidebar:account-filter", t("sidebar.accountFilterHint"), { icon: "filter" })}
                 aria-hidden="true"
               />
             </>
@@ -1898,11 +1935,11 @@ export function SidebarClient({
             <button type="button"
               onClick={cycleSidebarGroupBy}
               className={`rounded-md p-1 transition-colors ${sidebarGroupBy !== "kind" ? "bg-slate-100 text-slate-600" : "text-slate-300 hover:bg-slate-50 hover:text-slate-500"}`}
-              title={`${t("sidebar.ownerFilterTitle")}：${sidebarGroupBy === "kind" ? t("sidebar.groupByKind") : sidebarGroupBy === "institution" ? t("sidebar.groupByInstitution") : t("sidebar.groupByAccountGroup")}`}
+              {...hintProps("sidebar:group-by", `${t("sidebar.groupByHint")}：${sidebarGroupBy === "kind" ? t("sidebar.groupByKind") : sidebarGroupBy === "institution" ? t("sidebar.groupByInstitution") : t("sidebar.groupByAccountGroup")}`)}
             >
               <Repeat size={14} />
             </button>
-            <button onClick={toggleHideZero} className={`rounded-md p-1.5 text-xs transition-colors ${hideZero ? "bg-slate-100 text-slate-600" : "text-slate-300 hover:bg-slate-50 hover:text-slate-500"}`} title={t("sidebar.hideZero")}>
+            <button onClick={toggleHideZero} className={`rounded-md p-1.5 text-xs transition-colors ${hideZero ? "bg-slate-100 text-slate-600" : "text-slate-300 hover:bg-slate-50 hover:text-slate-500"}`} {...hintProps("sidebar:hide-zero", t("sidebar.hideZero"))}>
               <EyeOff size={14} />
             </button>
           </div>
@@ -1928,6 +1965,7 @@ export function SidebarClient({
                         type="button"
                         onClick={() => openOnlySection(sec.kind)}
                         className="flex min-w-0 flex-1 items-center gap-2 text-left text-sm font-semibold text-slate-800"
+                        {...hintProps(`sidebar:section:${sec.kind}`, t("sidebar.sectionOnlyHint"), { icon: "filter" })}
                       >
                         <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-slate-100 text-slate-500">
                           <SectionIcon size={14} />
@@ -1941,7 +1979,7 @@ export function SidebarClient({
                         type="button"
                         onClick={() => toggleSection(sec.kind)}
                         className="ml-2 inline-flex h-6 w-6 items-center justify-center rounded-md text-slate-300 transition-all duration-200 hover:bg-white hover:text-slate-500"
-                        title={collapsed ? t("common.expand") : t("common.collapse")}
+                        {...hintProps(`sidebar:section-toggle:${sec.kind}`, collapsed ? t("common.expand") : t("common.collapse"))}
                       >
                         <ChevronDown
                           size={18}
@@ -1964,7 +2002,7 @@ export function SidebarClient({
                                   href={group.href}
                                   prefetch={false}
                                   scroll={false}
-                                  title={group.label}
+                                  {...hintProps(`sidebar:loan-type:${group.key}`, group.label)}
                                   onMouseEnter={() => prefetchRoute(group.href ?? "")}
                                   onFocus={() => prefetchRoute(group.href ?? "")}
                                   onTouchStart={() => prefetchRoute(group.href ?? "")}
@@ -1984,6 +2022,7 @@ export function SidebarClient({
                                   type="button"
                                   onClick={() => focusAssetSubgroup(group.key, sec.subgroups?.map((subgroup) => subgroup.key) ?? [group.key])}
                                   className="flex w-full items-center gap-1.5 rounded-md px-3 py-0.5 text-left hover:bg-slate-50/80"
+                                  {...hintProps(`sidebar:group:${group.key}`, t("sidebar.subgroupOnlyHint"), { icon: "filter" })}
                                 >
                                   <div className="text-[10px] font-medium text-slate-400">{subgroupLabel}</div>
                                   <div className="h-px flex-1 bg-slate-100" />
@@ -2050,7 +2089,10 @@ export function SidebarClient({
                                       <button
                                         type="button"
                                         onClick={() => toggleSubAccounts(it)}
-                                        title={`${t(subAccountsCollapsed ? "common.expand" : "common.collapse")}：${itemTitle}`}
+                                        {...hintProps(
+                                          `sidebar:account-toggle:${group.key}:${it.id ?? it.name}`,
+                                          `${t(subAccountsCollapsed ? "common.expand" : "common.collapse")}：${itemTitle}`,
+                                        )}
                                         aria-expanded={!subAccountsCollapsed}
                                         className={`${accountLinkCls(active)} ${rowIndentCls} ${rowBorderCls} w-full text-left`}
                                       >

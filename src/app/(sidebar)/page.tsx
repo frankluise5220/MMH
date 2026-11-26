@@ -655,6 +655,12 @@ export default async function Home({
   const cashLedgerAccountIds = isAllCashView ? cashLedgerAccountIdsOf(accounts) : [];
   const cashLedgerIdSet = new Set(cashLedgerAccountIds);
   const detailScopeAccountId = isAllCashView ? ALL_CASH_DETAIL_SCOPE_ID : accountId;
+  // 「收益」开关（默认不显示货基每日结转行）出现在两处：①绑了货基的电子钱包视图
+  // ——设定属于这只钱包；②「全部收支记录」——这份列表里同样混着那些钱包的收益行
+  // （2026-11-26 用户要求）。账簿里一只绑货基的钱包都没有时，两个视图都不出现开关。
+  const ledgerHasMoneyFundWallet = !!moneyFundWallet?.linkedFundCode
+    || accounts.some((item) => item.kind === AccountKind.ewallet && !!item.linkedFundCode);
+  const showMoneyIncomeToggle = !!moneyFundWallet?.linkedFundCode || (isAllCashView && ledgerHasMoneyFundWallet);
   const needsDetailEntries = view === "detail" || view === "allcash" || view === "deposit" || view === "insurance" || (view === "bill" && isBillAccount);
 
   // 账单视图只走一个读取通道：整卡流水读一次，月份列表 / 当期明细 / 还款汇总 /
@@ -781,11 +787,11 @@ export default async function Home({
   const pagedDetailData = usePagedDetailEntries && !useClientDetailCache
     ? await loadEntriesPageForAccount(
         isAllCashView ? cashLedgerAccountIds : accountId,
-        // 绑定货基的钱包：「收益」开关没勾就在 SQL 显示层排除货基收益行；
-        // 余额折叠链不过滤，收益仍然计入账户余额（只是不在表里列出）。
+        // 绑货基的钱包 / 全部收支记录：「收益」开关没勾就在 SQL 显示层排除货基
+        // 收益行；余额折叠链不过滤，收益仍然计入账户余额（只是不在表里列出）。
         JSON.stringify({
           ...hidFilter,
-          ...(moneyFundWallet?.linkedFundCode && params?.showMoneyIncome !== "1"
+          ...(showMoneyIncomeToggle && params?.showMoneyIncome !== "1"
             ? { filters: { entryOriginNot: [TRANSACTION_SOURCE_MONEY_INCOME] } }
             : {}),
         }),
@@ -3890,6 +3896,7 @@ export default async function Home({
               entries={depositEntries}
               lots={depositLots}
               cashAccounts={cashAccountList}
+              cashAccountSSOptions={cashAccountSSOptions}
               renewAction={renewDeposit}
               payInterestAction={payDepositInterest}
             />
@@ -3944,6 +3951,7 @@ export default async function Home({
               createAction={createTransaction}
               editAction={editInvestment}
               propertyAccounts={metalPropertyAccountSSOptions}
+              tagOptions={tagBatchReplaceOptions}
               extractAction={extractMetalToFixedAsset}
               fillNavAction={fillFundNavFromCache}
               regularInvestFormAction={regularInvestFormAction}
@@ -3994,6 +4002,7 @@ export default async function Home({
               createAction={createTransaction}
               editAction={editInvestment}
               propertyAccounts={metalPropertyAccountSSOptions}
+              tagOptions={tagBatchReplaceOptions}
               extractAction={extractMetalToFixedAsset}
               fillNavAction={fillFundNavFromCache}
               regularInvestFormAction={regularInvestFormAction}
@@ -4068,6 +4077,7 @@ export default async function Home({
               createAction={createTransaction}
               editAction={editInvestment}
               propertyAccounts={metalPropertyAccountSSOptions}
+              tagOptions={tagBatchReplaceOptions}
               extractAction={extractMetalToFixedAsset}
               fillNavAction={fillFundNavFromCache}
               regularInvestFormAction={regularInvestFormAction}
@@ -4080,9 +4090,9 @@ export default async function Home({
               <div className="panel-surface flex min-h-0 flex-1 flex-col overflow-hidden">
                 <BasicDetailPanel
                   accountId={detailScopeAccountId}
-                  // 绑定货基的钱包：表头「交易类型」筛选换成「收益」开关，
+                  // 绑货基的钱包 + 全部收支记录：表头显示「收益」开关，
                   // 默认不勾（和后端 SQL 的排除条件一致）。
-                  showMoneyIncomeToggle={!!moneyFundWallet?.linkedFundCode}
+                  showMoneyIncomeToggle={showMoneyIncomeToggle}
                   showMoneyIncome={params?.showMoneyIncome === "1"}
                   isInvestAccount={isInvestAccount}
                   entries={pagedDetailEntries}
