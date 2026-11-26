@@ -24,9 +24,11 @@
  *   BENCH_RUNS           热跑次数（默认 3）
  *   BENCH_ACCOUNT_ID     明细页用例固定用这个账户（默认取流水最多的非信用卡账户）
  *   BENCH_SKIP_INDEX     设 1 跳过索引诊断
+ *   BENCH_ANALYZE        Set to 1 to update PostgreSQL planner statistics.
  *
- * 只读：不写任何业务表。唯一例外是第 5 项调用的 `normalizeDefaultCategoryHierarchyForHousehold`，
- * 它在版本标记已就位时是一次 `SystemSetting` 读取，与真实请求路径一致（可重复执行）。
+ * Planner maintenance requires BENCH_ANALYZE=1 and is skipped on SQLite.
+ * Category normalization only reads its version marker when already current;
+ * an uninitialized database can still require the same migration as a request.
  */
 
 import fs from "node:fs";
@@ -220,11 +222,11 @@ const EXPECTED_INDEXES: Array<{ name: string; columns: string[] }> = [
 type PrismaLike = (typeof import("../src/lib/db/prisma"))["prisma"];
 
 /**
- * 统计信息过期会让执行计划失真，基准数字就不可信（本机实测 pg_stat 里 transactions
- * 记着 9 行，实际 6 万行）。测之前先 ANALYZE 一次，除非 BENCH_SKIP_ANALYZE=1。
+ * ANALYZE writes PostgreSQL planner statistics. Require explicit opt-in so a
+ * benchmark does not unexpectedly perform maintenance on a shared database.
  */
 async function refreshStatistics(prisma: PrismaLike, provider: "postgres" | "sqlite"): Promise<void> {
-  if (provider === "sqlite" || process.env.BENCH_SKIP_ANALYZE === "1") return;
+  if (provider === "sqlite" || process.env.BENCH_ANALYZE !== "1") return;
   try {
     const before = await prisma.$queryRaw<Array<{ n_live_tup: bigint | number | null }>>`
       SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = 'transactions'
