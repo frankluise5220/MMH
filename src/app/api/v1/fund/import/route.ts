@@ -839,7 +839,9 @@ async function enrichImportItem(
   const contextFundCodeUsed = !fundCode && !!ctx.requestContext?.fundCode;
   if (contextFundCodeUsed && ctx.requestContext?.fundCode) fundCode = ctx.requestContext.fundCode;
   const supportedFundCode = isSupportedFundCode(fundCode);
-  const amount = amountForSubtype(Number(input.amount ?? 0), subtype);
+  // 赎回金额可以缺省：账单常只写份额（+日期），金额由 units × nav 反推（见下方净值解析之后），
+  // 所以 amount 必须可变，且金额校验要等到反推完成后再做。
+  let amount = amountForSubtype(Number(input.amount ?? 0), subtype);
   const issues: ImportIssue[] = [];
 
   const inputCashAccountId = isDividendReinvest ? "" : String(input.cashAccountId ?? "").trim();
@@ -942,18 +944,13 @@ async function enrichImportItem(
   }
   if (!fundCode) issues.push({ level: "error", message: "缺少基金代码" });
   else if (!supportedFundCode) issues.push({ level: "error", code: "INVALID_FUND_CODE", message: "INVALID_FUND_CODE" });
-  const canResolveDividendReinvestUnits =
-    subtype === "dividend_reinvest" &&
-    (parsePositiveNumber(input.units) != null || (amount > 0 && parsePositiveNumber(input.nav) != null));
-  if (subtype === "dividend_reinvest" ? !canResolveDividendReinvestUnits : !(amount > 0)) {
-    issues.push({ level: "error", message: "金额无效" });
-  }
-
   let confirmDays: number | null = null;
   let arrivalDays: number | null = null;
   let confirmDate = normalizeImportDatePart(String(input.confirmDate ?? "").trim()) ?? null;
   let nav = parseUserPositiveNumber(input, "nav", sourceCalculatedFields);
   let fee = parseUserNonNegativeNumber(input, "fee", sourceCalculatedFields);
+  /** 手续费是不是用户/账单给的：反推赎回金额后要按费率重算系统算出来的那一份。 */
+  const feeProvided = fee != null;
   const feeRateInput = sourceCalculatedFields.has("feeRate")
     ? null
     : parseNonNegativeNumber(input.feeRateInput ?? input.feeRate);
@@ -1072,6 +1069,26 @@ async function enrichImportItem(
       });
       calculatedFields.add("units");
     }
+
+    // 赎回不一定要有「金额」列：账单往往只写份额和日期，赎回总额 = 份额 × 净值
+    //（与手工赎回窗口 recalculateRedeemAmountsFromTerms 同一口径）。
+    // 净值优先用账单给的，否则用上面按确认日查到的；都拿不到才留空。
+    if (subtype === "redeem" && !(amount > 0) && units != null && units > 0 && nav != null && nav > 0) {
+      amount = Number((units * nav).toFixed(2));
+      // 手续费在这之前按旧金额（0）算过，这里按新金额补算；账单/用户给的手续费不动。
+      if (!feeProvided && feeRate != null && feeRate > 0) {
+        fee = Number((amount * (feeRate / 100)).toFixed(2));
+        calculatedFields.add("fee");
+      }
+    }
+  }
+
+  // 金额校验放在最后：赎回金额可能是上面按「份额 × 净值」反推出来的，
+  // 提前校验会把「有份额、有日期、只缺金额」的行误判成错误。
+  const dividendReinvestAmountReady = subtype === "dividend_reinvest"
+    && ((units != null && units > 0) || (amount > 0 && nav != null && nav > 0));
+  if (subtype === "dividend_reinvest" ? !dividendReinvestAmountReady : !(amount > 0)) {
+    issues.push({ level: "error", message: "金额无效" });
   }
 
   if (!fundName && fundCode && supportedFundCode) fundName = await resolveFundNameByCode(ctx, fundCode);

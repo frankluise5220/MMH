@@ -969,6 +969,11 @@ export function FundImportPreviewDialog({ open, file, context, tabs = null, sour
   // 不动勾选、不动用户已经改过的行、不改用户手填的净值/份额。
   const navBackfillTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const lastPreviewRequestRef = useRef<FundImportUploadItem[] | null>(null);
+  // 回填要按「用户此刻的输入」重算：单元格编辑只更新 uploadItems（局部重预览），
+  // lastPreviewRequestRef 停在上一次整表预览的原始数据上，拿它回填会把用户刚改的
+  // 账户/金额/份额盖回旧值。赎回行靠回填这一轮才由「份额 × 净值」算出金额。
+  const uploadItemsRef = useRef<FundImportUploadItem[]>([]);
+  uploadItemsRef.current = uploadItems;
 
   const clearNavBackfillTimers = useCallback(() => {
     for (const timer of navBackfillTimersRef.current) clearTimeout(timer);
@@ -976,7 +981,9 @@ export function FundImportPreviewDialog({ open, file, context, tabs = null, sour
   }, []);
 
   const runNavBackfill = useCallback(async () => {
-    const sourceItems = lastPreviewRequestRef.current;
+    const sourceItems = uploadItemsRef.current.length > 0
+      ? uploadItemsRef.current
+      : lastPreviewRequestRef.current;
     if (!open || !sourceItems || sourceItems.length === 0) return;
     try {
       const res = await fetch("/api/v1/fund/import", {
