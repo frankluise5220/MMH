@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Unlock } from "lucide-react";
 
-import { formatMoneyYuan as formatMoney } from "@/lib/format";
+import { formatMoneyYuan as formatMoney, roundDisplayNumber } from "@/lib/format";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
 
@@ -25,13 +25,17 @@ export default function EditBillAmount({
   const [editing, setEditing] = useState(false);
   const [committedAmount, setCommittedAmount] = useState(currentAmount);
   const [localHasOverride, setLocalHasOverride] = useState(hasOverride);
-  const displayAmount = committedAmount * displayMultiplier;
+  // 显示口径统一先收成两位小数：单元格文字（formatMoney）与输入框初值必须是同一个数，
+  // 否则「点一下进编辑」就会看到尾数变化，失焦时还被当成用户改过数字。
+  const displayAmount = roundDisplayNumber(committedAmount * displayMultiplier, 2);
   const [val, setVal] = useState(String(displayAmount.toFixed(2)));
   const [saving, setSaving] = useState(false);
   const [errMsg, setErrMsg] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
   const savingRef = useRef(false);
   const skipBlurCommitRef = useRef(false);
+  // 进编辑那一刻看到的数字：失焦时只要和它一样就当作没改，绝不写 override。
+  const editStartDisplayRef = useRef(displayAmount);
   const { t } = useI18n();
 
   useEffect(() => {
@@ -44,7 +48,7 @@ export default function EditBillAmount({
 
   useEffect(() => {
     if (!editing) {
-      setVal(String(displayAmount.toFixed(2)));
+      setVal(displayAmount.toFixed(2));
       setErrMsg("");
     }
   }, [displayAmount, editing]);
@@ -79,20 +83,29 @@ export default function EditBillAmount({
   const startEdit = useCallback(() => {
     if (savingRef.current) return;
     skipBlurCommitRef.current = false;
-    setVal(String(displayAmount.toFixed(2)));
+    editStartDisplayRef.current = displayAmount;
+    setVal(displayAmount.toFixed(2));
     setErrMsg("");
     setEditing(true);
   }, [displayAmount]);
 
   const cancelEdit = useCallback(() => {
     skipBlurCommitRef.current = true;
-    setVal(String(displayAmount.toFixed(2)));
+    setVal(displayAmount.toFixed(2));
     setErrMsg("");
     setEditing(false);
   }, [displayAmount]);
 
+  /**
+   * 解析输入框里的数字，返回「绝对值 + 用户显式写的符号」。
+   *
+   * 符号不能在这里替用户猜：账单金额显示为负数（流出），但溢缴/多还的账单显示为正数。
+   * 早先「没写符号一律当流出（-abs）」的规则会把正数显示的那几期在失焦时翻成欠款，
+   * 用户什么都没改却生成了 override（账单被锁）。现在只有显式写 + / - 才改符号，
+   * 否则沿用这一格原来的符号。
+   */
   const parseDisplayInput = useCallback((raw: string) => {
-    const trimmed = raw.trim().replace(/,/g, "");
+    const trimmed = raw.trim().replace(/[,，\s¥￥]/g, "");
     if (!trimmed) return null;
     const explicitPositive = trimmed.startsWith("+");
     const explicitNegative = trimmed.startsWith("-");
@@ -100,11 +113,12 @@ export default function EditBillAmount({
     if (!numericPart) return null;
     const parsed = Number(numericPart);
     if (!Number.isFinite(parsed)) return null;
-    const abs = Math.abs(parsed);
-    if (explicitPositive) return abs;
-    if (explicitNegative) return -abs;
-    return displayMultiplier === -1 ? -abs : abs;
-  }, [displayMultiplier]);
+    return {
+      abs: Math.abs(parsed),
+      // 0 = 没写符号
+      sign: explicitPositive ? 1 : explicitNegative ? -1 : 0,
+    };
+  }, []);
 
   const focusInput = useCallback(() => {
     requestAnimationFrame(() => {
@@ -154,21 +168,25 @@ export default function EditBillAmount({
 
   const commit = useCallback(async () => {
     if (savingRef.current) return;
-    const displayValue = parseDisplayInput(val);
-    if (displayValue == null) {
+    const parsed = parseDisplayInput(val);
+    if (!parsed) {
       setErrMsg(t("editBill.invalidAmount"));
       focusInput();
       return;
     }
-    const amount = displayValue / displayMultiplier;
-    // 和原来一样就直接退出，不写 override（金额显示只有两位小数，留 0.005 容差）
-    if (Math.abs(amount - committedAmount) < 0.005) {
-      skipBlurCommitRef.current = true;
-      setVal(String(displayAmount.toFixed(2)));
+    const startDisplay = editStartDisplayRef.current;
+    // 没写符号时沿用进编辑时这一格的正负：正常账单是负（流出），溢缴/多还是正。
+    const sign = parsed.sign !== 0 ? parsed.sign : startDisplay > 0 ? 1 : -1;
+    const nextDisplay = roundDisplayNumber(sign * parsed.abs, 2);
+    // 数字没变（含只点了一下、或只是把显示值原样敲回来）就什么都不做：
+    // 不写 override、不锁账单、也不把后台刷新改过的值当成用户输入。
+    if (Math.abs(nextDisplay - displayAmount) < 0.005 || Math.abs(nextDisplay - startDisplay) < 0.005) {
+      setVal(displayAmount.toFixed(2));
       setErrMsg("");
       setEditing(false);
       return;
     }
+    const amount = roundDisplayNumber(nextDisplay / displayMultiplier, 2);
     savingRef.current = true;
     skipBlurCommitRef.current = true;
     try {
@@ -176,7 +194,7 @@ export default function EditBillAmount({
     } finally {
       savingRef.current = false;
     }
-  }, [committedAmount, displayAmount, displayMultiplier, focusInput, parseDisplayInput, save, t, val]);
+  }, [displayAmount, displayMultiplier, focusInput, parseDisplayInput, save, t, val]);
 
   const handleBlur = useCallback(() => {
     if (skipBlurCommitRef.current) {
@@ -208,6 +226,8 @@ export default function EditBillAmount({
         editing ? "bg-blue-100" : "cursor-pointer hover:bg-slate-50",
       ].join(" ")}
       data-edit-bill-active={editing ? "true" : undefined}
+      // 就地编辑时焦点落在输入框上，这张表不该把它当成「键盘活动行」画整行蓝框
+      data-advanced-table-skip-row-highlight="true"
       // 整格拦截点击，不让 AdvancedDataTable 的 onRowClick 选中/切换账单行
       onClick={(event) => {
         event.stopPropagation();

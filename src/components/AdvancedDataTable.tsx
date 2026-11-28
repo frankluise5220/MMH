@@ -93,6 +93,14 @@ export const ADVANCED_TABLE_HEAD_SURFACE_CLASS = "bg-[#fbfaf7]";
  * 内置在组件里，调用方不必再给 `<tbody>` 传底色。
  */
 export const ADVANCED_TABLE_BODY_SURFACE_CLASS = "bg-white";
+/**
+ * 单元格内的就地编辑控件（账单页金额格）打这个属性：焦点进入时不点亮整行、不进键盘活动行。
+ *
+ * 表格的「键盘活动行」会画一圈蓝色 outline（整行框）。鼠标点行是为了看明细，随后点金额
+ * 就地编辑时焦点落进输入框，若照常落活动行就会一直框着这一行（2026-11-28 用户：
+ * 「点中金额进入编辑状态时取消单行选择状态，不要整条记录的蓝色框选」）。
+ */
+const ROW_HIGHLIGHT_SKIP_ATTR = "data-advanced-table-skip-row-highlight";
 const ROW_ACTIONS_COMPACT_CLASS = " [&_button]:min-h-0 [&_button]:max-h-5";
 /**
  * 控制列（勾选框 + 反选按钮）的固定宽度。
@@ -2372,6 +2380,12 @@ export function AdvancedDataTable<T>({
    * 往来款「点毕蕾跳到姜爷爷」）。按刚按下的那一行落高亮即可。
    */
   const pointerDownRowKeyRef = useRef<string | null>(null);
+  /**
+   * 这次按下是不是按在「不要行高亮」的单元格上（见 `ROW_HIGHLIGHT_SKIP_ATTR`）。
+   *
+   * 光标交给这些单元格里的输入控件时只解一次，别影响之后用 Tab 回表体的高亮起点。
+   */
+  const pointerDownSkipsRowHighlightRef = useRef(false);
   /** 键盘走到哪一行就把它拉进视口；同一个活动行只滚一次，数据刷新不会把视口拽回去。 */
   const scrolledActiveRowKeyRef = useRef<string | null>(null);
   useLayoutEffect(() => {
@@ -2425,6 +2439,19 @@ export function AdvancedDataTable<T>({
     const viewport = viewportRef.current;
     if (!viewport) return;
     const markFocused = (target: EventTarget | null) => {
+      // 单元格里的就地编辑控件（如账单页金额格）带了这个标记：焦点进来只是「在输入框里」，
+      // 不该把整行点亮，还要顺手撤掉点行时留下的蓝色行框。
+      if (target instanceof Element && target.closest(`[${ROW_HIGHLIGHT_SKIP_ATTR}]`)) {
+        pointerDownSkipsRowHighlightRef.current = false;
+        setActiveRowKey(null);
+        return;
+      }
+      if (pointerDownSkipsRowHighlightRef.current) {
+        // 同一次点击：先按在跳过行高亮的单元格上、焦点被表体容器拿走，别给这一行落高亮。
+        pointerDownSkipsRowHighlightRef.current = false;
+        setActiveRowKey(null);
+        return;
+      }
       setTableViewportFocused(true);
       // 焦点落在行内的按钮 / 输入框上时只标记「表内有焦点」，不动活动行。
       if (target !== viewport) return;
@@ -2439,7 +2466,9 @@ export function AdvancedDataTable<T>({
     };
     /** 捕获阶段记下按在哪一行：`focusin` 由这次 mousedown 的默认动作触发，冒泡阶段的 React 处理器来不及。 */
     const handlePointerDown = (event: MouseEvent) => {
-      const rowElement = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-advanced-row-key]") : null;
+      const target = event.target instanceof Element ? event.target : null;
+      pointerDownSkipsRowHighlightRef.current = Boolean(target?.closest(`[${ROW_HIGHLIGHT_SKIP_ATTR}]`));
+      const rowElement = target?.closest<HTMLElement>("[data-advanced-row-key]") ?? null;
       pointerDownRowKeyRef.current = rowElement?.dataset.advancedRowKey ?? null;
     };
     const handleFocusIn = (event: FocusEvent) => markFocused(event.target);
@@ -2449,6 +2478,7 @@ export function AdvancedDataTable<T>({
       if (next instanceof Node && viewport.contains(next)) return;
       setTableViewportFocused(false);
       keyboardSelectionAnchorRef.current = null;
+      pointerDownSkipsRowHighlightRef.current = false;
     };
     viewport.addEventListener("focusin", handleFocusIn);
     viewport.addEventListener("focusout", handleFocusOut);
