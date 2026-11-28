@@ -82,10 +82,15 @@ type ViewExcelRangeExportSpec = {
    */
   defaultDateRange?: { start: string; end: string };
   /**
+   * 弹窗打开时现取一次整份视图边界。`defaultDateRange` 可能还没算出来，
+   * 这时绝不能退回 `rows`（它可能已被分页 / 时间轴 / 表头筛选裁过）。
+   */
+  loadDefaultDateRange?: () => Promise<{ start: string; end: string } | null>;
+  /**
    * 按用户选的区间向服务端重新取数（含表头）。
    *
-   * 有它时导出内容不再受表格显示范围 / 分页限制：用户选的是「账户 / 筛选视图 ×
-   * 交易日期范围」，导出的就是那个区间里整份明细，而不是当前这一页。
+   * 有它时导出内容不再受表格显示范围 / 分页 / 表头筛选限制：用户选的是
+   * 「账户或视图 × 交易日期范围」，导出的就是那个区间里整份明细。
    */
   loadRows?: (range: { start: string; end: string }) => Promise<ExportCellValue[][]>;
 };
@@ -1594,14 +1599,23 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
     }
   }
 
-  function openExcelExportDialog() {
+  async function openExcelExportDialog() {
     const spec = props.excelExport;
     if (!spec) return;
     const dateColumnIndex = spec.dateColumnIndex ?? 0;
     const bounds = exportDateBounds(spec.rows, dateColumnIndex);
     setOpen(false);
-    setExcelExportStart(parseExportDate(spec.defaultDateRange?.start) || bounds.start);
-    setExcelExportEnd(parseExportDate(spec.defaultDateRange?.end) || bounds.end);
+    let defaultRange = spec.defaultDateRange;
+    if (spec.loadDefaultDateRange) {
+      try {
+        const fresh = await spec.loadDefaultDateRange();
+        if (fresh) defaultRange = fresh;
+      } catch {
+        // 取整份边界失败就沿用调用方已经算好的初值；rows 仍是最后兜底。
+      }
+    }
+    setExcelExportStart(parseExportDate(defaultRange?.start) || bounds.start);
+    setExcelExportEnd(parseExportDate(defaultRange?.end) || bounds.end);
     setExcelExportError("");
     setExcelExportOpen(true);
   }
@@ -1618,7 +1632,7 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
     setExcelExportError("");
     try {
       // 有 `loadRows` 就以服务端按区间重取的那份为准：表格里的 `rows` 只是当前
-      // 显示范围 / 当前页，拿它导出会漏掉区间内的历史记录。
+      // 显示范围 / 当前页，而且可能已经过了表头筛选，拿它导出会漏记录。
       const sourceRows = spec.loadRows
         ? await spec.loadRows({ start: excelExportStart, end: excelExportEnd })
         : spec.rows;
@@ -1751,7 +1765,7 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
           {props.excelExport ? (
             <button
               type="button"
-              onClick={openExcelExportDialog}
+              onClick={() => void openExcelExportDialog()}
               className="flex w-full items-center justify-start gap-2 whitespace-nowrap px-3 py-2 text-left text-xs text-slate-700 hover:bg-slate-50"
             >
               <FileSpreadsheet className="h-3.5 w-3.5 shrink-0" />

@@ -23,13 +23,29 @@ const DETAIL_FILTER_KEYS = [
   "type",
   "currency",
   "category",
+  /** 「查找」窗的分类条件：按 categoryId 精确命中（表头漏斗用的是展示名）。 */
+  "categoryId",
   "account",
+  /**
+   * 表头「关联账户」列。值是账户 id（展示 label 由前端反查成 id 后才下推）。
+   * 不复刻「哪一侧是本行账户」的判定，见 buildDetailFilterSql 里的说明。
+   */
+  "related",
   "remark",
+  /** 「查找」窗的关键字：对备注 / 对方备注 / 分类名 / 账户名做包含匹配。 */
+  "keyword",
   "entryOrigin",
   /** 内部用：排除某几种 source（绑定货基钱包的「收益」开关）。不是表头列。 */
   "entryOriginNot",
   "inflow",
   "outflow",
+  /** 「查找」窗的金额区间：按金额绝对值，不区分收支方向。 */
+  "amount",
+  /**
+   * 表头漏斗的「全不选」。它是一个**结果集语义**而不是某一列的值：分页模式下
+   * 若只把条件从服务端去掉，表格会照旧显示全部，看起来像「点了没反应」。
+   */
+  "emptyResult",
 ] as const;
 
 type DetailFilterKey = (typeof DETAIL_FILTER_KEYS)[number];
@@ -213,11 +229,14 @@ export function buildDetailFilterSql(filters: DetailFilters | null | undefined):
         dateColumnFilter(Prisma.sql`c."updatedAt"`, values);
         break;
       case "inflow":
-      case "outflow": {
+      case "outflow":
+      case "amount": {
         const ranges = values.map(parseAmountRange).filter((range): range is { from: number | null; to: number | null } => !!range);
         const flowSql = key === "inflow"
           ? Prisma.sql`CASE WHEN c."amount" > 0 THEN c."amount" ELSE NULL END`
-          : Prisma.sql`CASE WHEN c."amount" < 0 THEN -c."amount" ELSE NULL END`;
+          : key === "outflow"
+            ? Prisma.sql`CASE WHEN c."amount" < 0 THEN -c."amount" ELSE NULL END`
+            : Prisma.sql`ABS(c."amount")`;
         ranges.forEach((range) => {
           if (range.from != null) predicates.push(Prisma.sql`${flowSql} >= ${range.from}`);
           if (range.to != null) predicates.push(Prisma.sql`${flowSql} <= ${range.to}`);
@@ -233,6 +252,23 @@ export function buildDetailFilterSql(filters: DetailFilters | null | undefined):
       case "category":
         predicates.push(Prisma.sql`COALESCE(c."categoryName", '') IN (${Prisma.join(values)})`);
         break;
+      case "categoryId":
+        predicates.push(Prisma.sql`CAST(c."categoryId" AS TEXT) IN (${Prisma.join(values)})`);
+        break;
+      case "keyword": {
+        // ESCAPE 必须显式写：用户输入里的 % / _ 就是字面量，不能当通配符。
+        const keywordSql = values.slice(0, 5).map((value) => {
+          const pattern = `%${value.replace(/[\\%_]/g, (matched) => `\\${matched}`)}%`;
+          return Prisma.sql`(
+            COALESCE(c."note", '') LIKE ${pattern} ESCAPE '\\'
+            OR COALESCE(c."toNote", '') LIKE ${pattern} ESCAPE '\\'
+            OR COALESCE(c."categoryName", '') LIKE ${pattern} ESCAPE '\\'
+            OR COALESCE(c."accountName", '') LIKE ${pattern} ESCAPE '\\'
+          )`;
+        });
+        predicates.push(Prisma.sql`(${Prisma.join(keywordSql, " OR ")})`);
+        break;
+      }
       case "account":
         // 表头漏斗的候选值是展示名（含机构前缀），因此列与名两种值都要能命中。
         predicates.push(Prisma.sql`(
@@ -240,8 +276,32 @@ export function buildDetailFilterSql(filters: DetailFilters | null | undefined):
           OR COALESCE(c."accountName", '') IN (${Prisma.join(values)})
         )`);
         break;
-      case "remark":
-        predicates.push(Prisma.sql`COALESCE(c."note", '') IN (${Prisma.join(values)})`);
+      case "related": {
+        // 「关联账户」列 = 账户列的另一侧。哪一侧是「本行账户」由视图决定
+        // （单账户明细 / 全部收支 / 还信用卡同账单组），服务端不复刻那套判定：
+        // 两侧任一命中都属于「这笔记录涉及该账户」，不会把用户勾的值丢掉。
+        const ids = Prisma.join(values);
+        predicates.push(Prisma.sql`(
+          CAST(c."accountId" AS TEXT) IN (${ids})
+          OR CAST(c."toAccountId" AS TEXT) IN (${ids})
+        )`);
+        break;
+      }
+      case "remark": {
+        // 备注列的表头筛选是文本框（2026-11 起 `filterKind: "text"`），语义是包含匹配，
+        // 不是从枚举里挑一个精确值；多值时任一命中即可。
+        const patterns = values.slice(0, 20).map(
+          (value) => `%${value.replace(/[\\%_]/g, (matched) => `\\${matched}`)}%`,
+        );
+        predicates.push(Prisma.sql`(${Prisma.join(
+          patterns.map((pattern) => Prisma.sql`COALESCE(c."note", '') LIKE ${pattern} ESCAPE '\\'`),
+          " OR ",
+        )})`);
+        break;
+      }
+      case "emptyResult":
+        // 「全不选」：恒假谓词，保证总数 / 当前页 / 漏斗计数三处都是 0 行。
+        predicates.push(Prisma.sql`1 = 0`);
         break;
       case "entryOrigin":
         predicates.push(Prisma.sql`COALESCE(c."source", '') IN (${Prisma.join(values)})`);

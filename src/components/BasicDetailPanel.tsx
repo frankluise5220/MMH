@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { TRANSACTION_SOURCE_MONEY_INCOME } from "@/lib/transaction-semantics";
+import { BALANCE_RECONCILE_SOURCE } from "@/lib/balance-reconcile";
 import { X } from "lucide-react";
 import { BasicDetailBatchDeleteMessage, BasicDetailSelectionProvider } from "@/components/BasicDetailSelection";
 import type { BasicDetailBatchCategoryOption } from "@/components/BasicDetailSelection";
@@ -36,6 +37,11 @@ import {
 } from "@/lib/detail-pagination-preference";
 import { isAbortError } from "@/lib/client/detail-all-entries";
 import {
+  parseDetailFiltersParam,
+  parseDetailTableFiltersParam,
+  type DetailFilterDict,
+} from "@/lib/detail-search";
+import {
   detailAllCacheKey,
   detailRangeCovers,
   dropDetailAllCache,
@@ -64,6 +70,22 @@ type DetailPagePayload = {
   entries: DetailEntry[];
   totalCount: number | null;
 };
+
+/**
+ * 进入表头筛选前那一帧的未筛选第 1 页。
+ *
+ * 后台整份缓存分 5000 行/块加载，用户可能在它到齐前就筛选；取消筛选时先拿这份
+ * 快照把第 1 页和「共 N 条」瞬间还原，服务端重取留在后台做。只在同一视图 /
+ * 时间轴 / 收益口径 / 页大小下复用，且金融事件一到就作废。
+ */
+type UnfilteredPageSnapshot = {
+  key: string;
+  entries: DetailEntry[];
+  totalCount: number;
+  originalCount: number;
+  at: number;
+};
+const UNFILTERED_PAGE_SNAPSHOT_TTL_MS = 5 * 60 * 1000;
 
 /**
  * 取一页明细（`/api/v1/transactions/detail`）。
@@ -132,11 +154,11 @@ type BasicDetailPanelProps = {
   normalExportRows?: string[][];
   normalExportRowsByEntryId?: Record<string, string[]>;
   /**
-   * 导出按所选交易日期范围向服务端重取整份明细（而不是只导表格当前显示的那些行）。
+   * 明细导出按导出弹层里选的交易日期范围向服务端重取整份视图（而不是只导表格
+   * 当前显示的那些行）。表格时间轴与表头筛选都不进入导出口径。
    *
-   * 只在首屏行是「服务端分页」口径时打开：明细 / 全部收支、且没有 URL 筛选。
-   * 有表头筛选时 `normalExportRows` 本来就是完整筛选结果（不受分页影响），不需要
-   * 也不应该再按区间重取（那条路径不带筛选条件）。
+   * 打开条件是「这个视图可以由服务端按账户 / 全部收支重取整份明细」，与表格
+   * 当前是否分页、有没有表头筛选无关。
    */
   fullRangeExport?: boolean;
   /**
@@ -386,6 +408,31 @@ function GuideHotspot({
   );
 }
 
+/**
+ * 表头列筛选下推服务端时占用的 filter key。
+ * 变更时先把这些 key 从 URL 的 `filters` 里清掉再合并新的，避免「取消勾选某列」后
+ * 旧条件还留在查询串上继续生效。
+ */
+const TABLE_FILTER_SERVER_KEYS = [
+  "date",
+  "postedAt",
+  "createdAt",
+  "updatedAt",
+  "inflow",
+  "outflow",
+  "currency",
+  "account",
+  /** 关联账户列：下推的是账户 id（展示 label 在前端反查成 id，见 translateTableFilters）。 */
+  "related",
+  "categoryId",
+  /** 分类列的表头筛选：能反查回 id 时用 categoryId，落空时按展示名下发（见 translateTableFilters）。 */
+  "category",
+  "type",
+  "remark",
+  /** 表头漏斗「全不选」的恒假条件，换筛选时必须一起清掉。 */
+  "emptyResult",
+] as const;
+
 export function BasicDetailPanel({
   accountId,
   isInvestAccount,
@@ -440,9 +487,16 @@ export function BasicDetailPanel({
   const [localShowMoneyIncome, setLocalShowMoneyIncome] = useState(showMoneyIncome);
   useEffect(() => setLocalShowMoneyIncome(showMoneyIncome), [showMoneyIncome]);
   const hideMoneyIncome = showMoneyIncomeToggle && !localShowMoneyIncome;
-  const moneyIncomeFilters = hideMoneyIncome
-    ? { entryOriginNot: [TRANSACTION_SOURCE_MONEY_INCOME] }
-    : null;
+  // 「全部记录」不列出余额校准行；余额折叠链仍保留它们，单账户明细也不受影响。
+  const hideBalanceReconcile = isAllCashDetailScope(accountId);
+  const implicitHiddenOrigins = useMemo(() => [
+    ...(hideMoneyIncome ? [TRANSACTION_SOURCE_MONEY_INCOME] : []),
+    ...(hideBalanceReconcile ? [BALANCE_RECONCILE_SOURCE] : []),
+  ], [hideBalanceReconcile, hideMoneyIncome]);
+  const implicitFilters = useMemo(
+    () => implicitHiddenOrigins.length > 0 ? { entryOriginNot: implicitHiddenOrigins } : null,
+    [implicitHiddenOrigins],
+  );
   const normalizedInitialPageSize = normalizeDetailPageSize(initialPageSize);
   const [localEntries, setLocalEntries] = useState(entries);
   const [localTotalCount, setLocalTotalCount] = useState(totalCount);
@@ -516,6 +570,48 @@ export function BasicDetailPanel({
    */
   const rscPageWindowRef = useRef<{ accountId: string; rangeKey: string; count: number; headId: string } | null>(null);
   const clientPaginationEnabled = !hasDetailFilters;
+  const originalCountRequestKeyRef = useRef("");
+  /**
+   * 表头徽标的分母：当前视图/时间范围下未做表头筛选的总数。
+   * 只带默认隐藏口径（收益 / 余额校准），绝不携带 tableFilters/filters，
+   * 否则筛选后分母会一起缩成分子（300/300）。
+   */
+  const loadOriginalCount = useCallback(async (
+    range: { from: string; to: string },
+    hideIncomeOverride?: boolean,
+    signal?: AbortSignal,
+  ) => {
+    if (!clientPaginationEnabled) return;
+    const origins = [
+      ...((hideIncomeOverride ?? hideMoneyIncome) ? [TRANSACTION_SOURCE_MONEY_INCOME] : []),
+      ...(hideBalanceReconcile ? [BALANCE_RECONCILE_SOURCE] : []),
+    ];
+    const key = `${accountId}|${range.from}~${range.to}|${origins.join(",")}`;
+    originalCountRequestKeyRef.current = key;
+    const params = new URLSearchParams({ accountId, page: "1", pageSize: "1" });
+    if (origins.length > 0) params.set("filters", JSON.stringify({ entryOriginNot: origins }));
+    if (range.from || range.to) params.set("range", `${range.from}~${range.to}`);
+    try {
+      const payload = await loadDetailPagePayload(
+        `/api/v1/transactions/detail?${params.toString()}`,
+        signal,
+        t("basicDetail.loadFailed"),
+      );
+      if (originalCountRequestKeyRef.current !== key || payload.totalCount == null) return;
+      setLocalOriginalCount(payload.totalCount);
+    } catch (error) {
+      if (!isAbortError(error)) console.error("Load unfiltered detail count failed:", error);
+    }
+  }, [accountId, clientPaginationEnabled, hideBalanceReconcile, hideMoneyIncome, t]);
+  /**
+   * 表头筛选的**展示值**口径：分页模式下从 URL 的 `tableFilters` 恢复（漏斗勾选态）。
+   * 「全部」模式仍是本地筛选，筛选态由表格自己持久化，这里不参与。
+   */
+  const [initialTableFilters] = useState<DetailFilterDict | undefined>(() => {
+    if (typeof window === "undefined") return undefined;
+    const raw = new URL(window.location.href).searchParams.get("tableFilters");
+    return parseDetailTableFiltersParam(raw) ?? undefined;
+  });
   /**
    * 页码 / 每页行数 / 全部 / 自适应——**唯一**的状态点。三个事件推动它：
    *
@@ -604,6 +700,41 @@ export function BasicDetailPanel({
   // 否则分页 effect 会立刻又取一次第 1 页。
   const safePage = detailAll ? 1 : locatingDateRef.current ? Math.max(1, page) : detailPager.safePage;
   /**
+   * 当前查询串上的明细筛选（服务端口径）。分页模式下表头筛选就写在这里：
+   * 翻页、重取、导出都必须沿用它，否则翻到第 2 页就退回「未筛选」。
+   */
+  const readUrlDetailFilters = useCallback((): DetailFilterDict | null => {
+    if (typeof window === "undefined") return null;
+    return parseDetailFiltersParam(new URL(window.location.href).searchParams.get("filters"));
+  }, []);
+  /**
+   * 一次取数 / 一次定位要下推的筛选：URL 上的表头筛选 + 「收益」开关。
+   *
+   * 取一页、只刷文本、定位页码三处必须同一口径。定位少了这一份，服务端就按
+   * 「未筛选」算页码与总数 —— 用户切每页行数时表头的「共 N 条」会跳回全量，
+   * 看起来就是「翻页把筛选范围改了」。
+   *
+   * 时间范围（`range`）不在这里：它是地址栏上独立的参数，只跟时间轴有关，
+   * 翻页 / 换页大小一律不许改它。
+   */
+  const buildPageFilters = useCallback((hideIncomeOverride?: boolean): DetailFilterDict => {
+    const filters: DetailFilterDict = { ...(readUrlDetailFilters() ?? {}) };
+    const excluded = [
+      ...(filters.entryOriginNot ?? []),
+      ...((hideIncomeOverride ?? hideMoneyIncome) ? [TRANSACTION_SOURCE_MONEY_INCOME] : []),
+      ...(hideBalanceReconcile ? [BALANCE_RECONCILE_SOURCE] : []),
+    ];
+    if (excluded.length > 0) filters.entryOriginNot = Array.from(new Set(excluded));
+    return filters;
+  }, [hideBalanceReconcile, hideMoneyIncome, readUrlDetailFilters]);
+  /**
+   * 一份页数据的身份：页码 + 页大小 + 时间戳范围 + 侧筛选。
+   * 侧筛选必须在内 —— 否则「筛 A」和「筛 B」的响应会被当成同一页互相覆盖。
+   */
+  const buildDetailPageRequestKey = useCallback((pageNo: number, size: number, all: boolean) => (
+    `${accountId}|${all ? "all" : String(pageNo)}|${size}|${serverDateRangeKey}|${JSON.stringify(readUrlDetailFilters() ?? {})}`
+  ), [accountId, readUrlDetailFilters, serverDateRangeKey]);
+  /**
    * 键盘 PageUp / PageDown：明细页的页码由这里持有（页数据是切好/取好再传给表格的），
    * 表格自己算不出下一页，所以由这里翻页。返回 true = 已翻页，表格据此把活动行落到
    * 新页首/末行；到首页/末页返回 false，表格就不动。
@@ -619,9 +750,29 @@ export function BasicDetailPanel({
   // 之前那笔仍然有效、数据更新的响应被判成过期丢掉，表现就是「记一笔保存成功，
   // 表格里却没有新行」。同一个 key 的响应谁先到都能用，key 变了（翻页 / 改页大小）
   // 才丢。
-  const detailPageKey = `${accountId}|${detailAll ? "all" : String(safePage)}|${pageSize}|${serverDateRangeKey}`;
+  const detailPageKey = buildDetailPageRequestKey(safePage, pageSize, detailAll);
   const detailPageKeyRef = useRef(detailPageKey);
   detailPageKeyRef.current = detailPageKey;
+
+  /** 取消表头筛选时的瞬时还原快照：只用于第 1 页，且必须和当前视图口径完全一致。 */
+  const unfilteredPageSnapshotRef = useRef<UnfilteredPageSnapshot | null>(null);
+  // 页大小不进 key：快照存的是页面 1 的前缀，当前行数变小直接切片即可。自动适配
+  // 常把首屏从第 1 页挪到第 2 页，所以挂在挂载时的第 1 页上，而不是等用户筛选那一刻。
+  const unfilteredSnapshotKey = `${accountId}|${serverDateRangeKey}|${hideMoneyIncome ? "hideIncome" : "all"}|${hideBalanceReconcile ? "hideBalanceReconcile" : "all"}`;
+
+  useEffect(() => {
+    if (!clientPaginationEnabled || detailAll || safePage !== 1 || localEntries.length === 0) return;
+    if (readUrlDetailFilters()) return;
+    const current = unfilteredPageSnapshotRef.current;
+    if (current?.key === unfilteredSnapshotKey && current.entries === localEntries) return;
+    unfilteredPageSnapshotRef.current = {
+      key: unfilteredSnapshotKey,
+      entries: localEntries,
+      totalCount: localTotalCount,
+      originalCount: localOriginalCount,
+      at: Date.now(),
+    };
+  }, [clientPaginationEnabled, detailAll, localEntries, localOriginalCount, localTotalCount, readUrlDetailFilters, safePage, unfilteredSnapshotKey]);
 
   useEffect(() => {
     if (!initialClientDetailCacheHint) return;
@@ -667,8 +818,9 @@ export function BasicDetailPanel({
   );
   const reuseSharedAllCash = deriveFromAllCashCache && sharedAllCashReady;
   const detailCacheScopeId = reuseSharedAllCash ? ALL_CASH_DETAIL_SCOPE_ID : accountId;
-  // 「收益」开关分两种口径的整份缓存：关掉时那份只含非收益行，不能和全量混用。
-  const detailAllKey = `${detailAllCacheKey(detailCacheScopeId)}${hideMoneyIncome ? ":hideIncome" : ""}`;
+  // 缓存按显示层口径分桶：「收益」关掉 / 「全部记录」隐藏余额校准都不能和全量混用。
+  // 全部记录用的是带后缀的桶，单账户复用共享缓存时只会认不带后缀的全量桶。
+  const detailAllKey = `${detailAllCacheKey(detailCacheScopeId)}${hideMoneyIncome ? ":hideIncome" : ""}${hideBalanceReconcile ? ":hideBalanceReconcile" : ""}`;
   const businessTodayKey = todayDateBusinessYmd(getTimeZonePreference());
 
   /**
@@ -829,14 +981,28 @@ export function BasicDetailPanel({
       && isDetailAllReady(ALL_CASH_DETAIL_SCOPE_ID, detailAllRangeKey);
     const scopeId = sharedReady ? ALL_CASH_DETAIL_SCOPE_ID : accountId;
     return {
-      key: `${detailAllCacheKey(scopeId)}${hideMoneyIncome ? ":hideIncome" : ""}`,
+      key: `${detailAllCacheKey(scopeId)}${hideMoneyIncome ? ":hideIncome" : ""}${hideBalanceReconcile ? ":hideBalanceReconcile" : ""}`,
       accountId: scopeId,
     };
-  }, [accountId, deriveFromAllCashCache, detailAllRangeKey, hideMoneyIncome]);
+  }, [accountId, deriveFromAllCashCache, detailAllRangeKey, hideBalanceReconcile, hideMoneyIncome]);
 
-  const reloadDetailPage = useCallback((signal?: AbortSignal, hideIncomeOverride?: boolean, revalidateCached = false) => {
+  const reloadDetailPage = useCallback((
+    signal?: AbortSignal,
+    hideIncomeOverride?: boolean,
+    revalidateCached = false,
+    /**
+     * 目标页码。默认用当前渲染的页码；改筛选时条件变了、页码也回到第 1 页，
+     * 但这一帧的 `safePage` 还是旧值——不显式指过来，取回来的就是「新条件 + 旧页码」，
+     * 而表头「共 N 条」与这一页的行会互相矛盾（2026-11-27 实测：勾了关联账户筛选，
+     * 总数还是全量，因为这次重取压根没发生）。
+     */
+    pageOverride?: number,
+  ) => {
     if (!clientPaginationEnabled) return;
-    const requestKey = `${accountId}|${detailAll ? "all" : String(safePage)}|${pageSize}|${serverDateRangeKey}`;
+    const requestPage = pageOverride ?? safePage;
+    const urlFilters = readUrlDetailFilters();
+    const filtersSignature = urlFilters ? JSON.stringify(urlFilters) : "";
+    const requestKey = buildDetailPageRequestKey(requestPage, pageSize, detailAll);
     if (detailAll) {
       const scope = resolveDetailCacheScope();
       // 共享缓存刚作废：渲染用的 key 下一帧就会切到本账户，由那个 effect 启动加载；
@@ -846,8 +1012,12 @@ export function BasicDetailPanel({
       const hide = hideIncomeOverride ?? hideMoneyIncome;
       const effectiveKey = hideIncomeOverride === undefined
         ? detailAllKey
-        : `${detailAllCacheKey(scope.accountId)}${hide ? ":hideIncome" : ""}`;
-      const effectiveFilters = hide ? { entryOriginNot: [TRANSACTION_SOURCE_MONEY_INCOME] } : null;
+        : `${detailAllCacheKey(scope.accountId)}${hide ? ":hideIncome" : ""}${hideBalanceReconcile ? ":hideBalanceReconcile" : ""}`;
+      const effectiveOrigins = [
+        ...(hide ? [TRANSACTION_SOURCE_MONEY_INCOME] : []),
+        ...(hideBalanceReconcile ? [BALANCE_RECONCILE_SOURCE] : []),
+      ];
+      const effectiveFilters = effectiveOrigins.length > 0 ? { entryOriginNot: effectiveOrigins } : null;
       // 「全部」= 窗口内整份：缓存里已经有了，只取快照，不发请求。
       const snapshot = ensureDetailAll<DetailEntry>({
         key: effectiveKey,
@@ -862,7 +1032,11 @@ export function BasicDetailPanel({
     }
     // 缓存优先：窗口内数据齐了就从本地切这一页。
     // 收益开关刚切时缓存还是旧口径，必须跳过缓存直接打接口。
-    const cached = hideIncomeOverride === undefined ? readCachedDetailPage(safePage, pageSize) : null;
+    // 带筛选时不能读本地缓存：缓存是时间轴窗口内的整份（未筛），在本地上切页
+    // 会把没命中条件的行也带出来。收益开关刚切时同理（缓存还是旧口径）。
+    const cached = hideIncomeOverride === undefined && !filtersSignature
+      ? readCachedDetailPage(requestPage, pageSize)
+      : null;
     if (cached) {
       if (requestKey !== detailPageKeyRef.current) return;
       setLocalEntries(cached.entries);
@@ -877,13 +1051,12 @@ export function BasicDetailPanel({
     }
     const params = new URLSearchParams({
       accountId,
-      page: String(safePage),
+      page: String(requestPage),
       pageSize: String(pageSize),
     });
-    // 收益开关刚切时 props 还是旧值，用 override 立刻按新口径重取。
-    if (hideIncomeOverride ?? hideMoneyIncome) {
-      params.set("filters", JSON.stringify({ entryOriginNot: [TRANSACTION_SOURCE_MONEY_INCOME] }));
-    }
+    // 表头筛选 / 查找条件 + 收益开关，一起下推。
+    const pageFilters = buildPageFilters(hideIncomeOverride);
+    if (Object.keys(pageFilters).length > 0) params.set("filters", JSON.stringify(pageFilters));
     // 窗口还没齐（刚进页面）：照旧按页取一次，范围无条件下推。
     if (hasDetailDateRange) params.set("range", serverDateRangeKey);
     // 不带 `no-store`：接口发了 ETag，刷新/重进时浏览器会带 If-None-Match 回来，
@@ -920,14 +1093,13 @@ export function BasicDetailPanel({
         else dropDetailAllCache([detailAllKey]);
       }
       setLocalEntries(payload.entries);
-      if (payload.totalCount != null) {
-        setLocalTotalCount(payload.totalCount);
-        setLocalOriginalCount(payload.totalCount);
-      }
+      // totalCount 是**当前结果集**（含表头筛选）的条数；分母 localOriginalCount
+      // 只能由 RSC 的 originalCount 或 loadOriginalCount 更新，别在这里覆盖。
+      if (payload.totalCount != null) setLocalTotalCount(payload.totalCount);
       locatingDateRef.current = false;
       setIsPageLoading(false);
     })();
-  }, [accountId, applyDetailAllSnapshot, clientPaginationEnabled, detailAll, detailAllKey, detailAllRangeKey, hasDetailDateRange, pageSize, readCachedDetailPage, resolveDetailCacheScope, safePage, serverDateRangeKey, t]);
+  }, [accountId, applyDetailAllSnapshot, buildDetailPageRequestKey, buildPageFilters, clientPaginationEnabled, detailAll, detailAllKey, detailAllRangeKey, hasDetailDateRange, hideBalanceReconcile, hideMoneyIncome, pageSize, readCachedDetailPage, readUrlDetailFilters, resolveDetailCacheScope, safePage, serverDateRangeKey, t]);
 
   /**
    * 表头「收益」开关：写回 URL（刷新/分享后口径不变），然后按新口径把表格重取一次。
@@ -944,6 +1116,7 @@ export function BasicDetailPanel({
     const nextHref = `${url.pathname}${url.search}${url.hash}`;
     // 口径变了：整份明细缓存不能再用，否则点「全部」又冒出刚关掉的收益行。
     setLocalShowMoneyIncome(next);
+    if (clientPaginationEnabled) void loadOriginalCount(detailDateRange, !next);
     dropDetailAllCache([detailAllKey]);
     if (!clientPaginationEnabled) {
       router.replace(nextHref, { scroll: false });
@@ -952,7 +1125,115 @@ export function BasicDetailPanel({
     }
     replaceCurrentRouteUrl(nextHref);
     reloadDetailPage(undefined, !next);
-  }, [clientPaginationEnabled, detailAllKey, reloadDetailPage, router]);
+  }, [clientPaginationEnabled, detailAllKey, detailDateRange, loadOriginalCount, reloadDetailPage, router]);
+
+  /**
+   * 漏斗候选值的行集（分页模式）：按**时间轴范围内的整份记录**汇总，不是当前页。
+   *
+   * 表格只拿到当前一页（几十行），拿它做 distinct 只能得到「这一页出现过的值」——
+   * 用户看到的下拉就永远缺项。后台备料（`detail-all-store`）本来就持有窗口内的整份
+   * 明细，这里在漏斗打开的瞬间取一份快照交给表格：候选值 / 计数 / 搜索文本都按全量
+   * 算，而且用的还是行内同一套 `filterText`，不需要任何展示值→服务端值的翻译。
+   *
+   * 只在打开时取一次：备料是分块到达的，逐块 setState 会让几万行的表格反复重建；
+   * 关掉再打开就能拿到更新的快照。快照还没备好时传 undefined，表格退回当前页汇总，
+   * 行为不倒退。
+   */
+  const [tableFilterOptionRows, setTableFilterOptionRows] = useState<DetailEntry[] | undefined>(undefined);
+  // 换账户 / 换时间窗口 / 切收益口径：旧行集不能继续当候选值，否则会在新账户的漏斗里
+  // 列出上一个账户的分类与账户名。下一次打开漏斗自然取到新的快照。
+  useEffect(() => {
+    setTableFilterOptionRows(undefined);
+  }, [detailAllKey, detailAllRangeKey]);
+  const handleTableFilterColumnOpen = useCallback(() => {
+    if (detailAll) return;
+    const snapshot = peekDetailAll<DetailEntry>(detailAllKey);
+    if (!snapshot || snapshot.entries.length === 0) return;
+    const windowed = filterEntriesByRange(scopeEntriesOf(snapshot.entries), detailAllRangeKey);
+    setTableFilterOptionRows(windowed.length > 0 ? windowed : undefined);
+  }, [detailAll, detailAllKey, detailAllRangeKey, scopeEntriesOf]);
+
+  /**
+   * 表头列筛选在分页模式下的落点：**下推服务端**，作用于「时间轴范围内的全部记录」，
+   * 而不是当前这一页；「全部」模式整份已在本地，仍由表格自己筛（`remoteTableFilters`）。
+   *
+   * 为什么走整页刷新（router.replace + RSC 重渲染）而不是 `reloadDetailPage`：
+   * 分页模式的第一页和「共 N 条」是 RSC 按查询串直出的，页码 / 合计 / 余额折叠加总
+   * 都必须和服务端同一口径重算。只在客户端换一页会把「共 N 条」留在旧值上。
+   */
+  const handleTableFiltersChange = useCallback((next: {
+    display: Partial<Record<string, string[]>>;
+    server: DetailFilterDict;
+  }) => {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    const currentDisplayJson = url.searchParams.get("tableFilters") ?? "";
+    const currentFiltersJson = url.searchParams.get("filters") ?? "";
+    // 展示值口径：只用来恢复漏斗勾选态。
+    const nextDisplayJson = Object.keys(next.display).length > 0 ? JSON.stringify(next.display) : "";
+    // 服务端口径：保留查找窗 / 收益开关这类非表头条件，只替换表头那几个 key。
+    const merged: DetailFilterDict = { ...(parseDetailFiltersParam(url.searchParams.get("filters")) ?? {}) };
+    for (const key of TABLE_FILTER_SERVER_KEYS) delete merged[key];
+    Object.assign(merged, next.server);
+    const nextFiltersJson = Object.keys(merged).length > 0 ? JSON.stringify(merged) : "";
+    // 从 URL 恢复勾选态后，组件会主动把同一份条件再抛一次；一模一样就别再取一遍。
+    if (nextDisplayJson === currentDisplayJson && nextFiltersJson === currentFiltersJson) {
+      return;
+    }
+    // 进入筛选时留住未筛选的第 1 页：后台整份缓存还没到齐时，取消筛选不能让用户
+    // 干等服务端。快照只存一页，口径键不同就自动失效。
+    const enteringFilter = !currentFiltersJson && !!nextFiltersJson;
+    const clearingFilter = !!currentFiltersJson && !nextFiltersJson;
+    if (enteringFilter && clientPaginationEnabled && !detailAll && safePage === 1 && localEntries.length > 0) {
+      unfilteredPageSnapshotRef.current = {
+        key: unfilteredSnapshotKey,
+        entries: localEntries,
+        totalCount: localTotalCount,
+        originalCount: localOriginalCount,
+        at: Date.now(),
+      };
+    }
+    if (nextDisplayJson) url.searchParams.set("tableFilters", nextDisplayJson);
+    else url.searchParams.delete("tableFilters");
+    if (nextFiltersJson) url.searchParams.set("filters", nextFiltersJson);
+    else url.searchParams.delete("filters");
+    // 条件变了，页码回到第一页。参数名是 `detailPage`（见 onPersist），不是 `page`：
+    // 删错名字等于没删，地址栏会带着旧页码让 RSC 按新条件取第 5 页。
+    url.searchParams.delete("detailPage");
+    const nextHref = `${url.pathname}${url.search}${url.hash}`;
+    // 分页模式下列表由本组件持有，RSC 重渲染不会覆盖它 —— 必须自己按新口径取一次。
+    replaceCurrentRouteUrl(nextHref);
+    // 取消筛选：先同步把刚才那一帧的未筛选第 1 页放回去，用户立刻看到全量记录；
+    // 服务端重取和后台缓存补料照常在后面跑，回来后按同一口径校正行数 / 合计。
+    if (clearingFilter && clientPaginationEnabled && !detailAll && safePage === 1) {
+      const snapshot = unfilteredPageSnapshotRef.current;
+      if (
+        snapshot
+        && snapshot.key === unfilteredSnapshotKey
+        && Date.now() - snapshot.at <= UNFILTERED_PAGE_SNAPSHOT_TTL_MS
+        && snapshot.entries.length >= pageSize
+      ) {
+        setLocalEntries(snapshot.entries.slice(0, pageSize));
+        setLocalTotalCount(snapshot.totalCount);
+        setLocalOriginalCount(snapshot.originalCount);
+        setIsPageLoading(false);
+        locatingDateRef.current = false;
+      }
+      unfilteredPageSnapshotRef.current = null;
+    }
+    // 「全部」模式：整份记录已在本地，过滤由表格自己做，这里再下推服务端只会白拉一页、
+    // 还会把分页状态搅乱。但条件已经写进 URL 了 —— 那是筛选的唯一真源，浏览方式（全部 /
+    // 每页多少行）从属于它：切回按页显示时 RSC 按这份条件重取，不会退回上一次的筛选。
+    if (detailAll) return;
+    // 条件变了，旧页码没有意义；页码回第 1 页与「按新条件重取」是两件事——
+    // 以前这里在非第 1 页直接 return，指望分页状态变更顺手触发一次取数，
+    // 但 ref 身份没对齐时那次取数会被过期判定丢掉，界面就停在旧结果上
+    // （用户看到的就是「勾了筛选，还是两万多条」）。现在两件事都显式做。
+    if (safePage !== 1) goDetailPage(1);
+    // 先把「当前页身份」对齐到新条件，否则请求回来的结果会被过期判定（requestKey !== ref）丢掉。
+    detailPageKeyRef.current = buildDetailPageRequestKey(1, pageSize, detailAll);
+    reloadDetailPage(undefined, undefined, false, 1);
+  }, [buildDetailPageRequestKey, clientPaginationEnabled, detailAll, goDetailPage, localEntries, localOriginalCount, localTotalCount, pageSize, reloadDetailPage, safePage, unfilteredSnapshotKey]);
 
   /**
    * 只改行文本（备注 / 分类 / 标签…）时的最低限度刷新，只在索引分页视图使用：
@@ -970,9 +1251,10 @@ export function BasicDetailPanel({
       page: String(safePage),
       pageSize: String(pageSize),
     });
-    if (hideMoneyIncome) {
-      params.set("filters", JSON.stringify(moneyIncomeFilters));
-    }
+    // 只改行文本也要沿用当前筛选：不带 filters 取回来的是未筛的一页，
+    // 拿它按 id 覆盖会把筛选结果替换成别的行。
+    const textOnlyFilters = buildPageFilters();
+    if (Object.keys(textOnlyFilters).length > 0) params.set("filters", JSON.stringify(textOnlyFilters));
     if (hasDetailDateRange) params.set("range", serverDateRangeKey);
     const requestKey = detailPageKeyRef.current;
     try {
@@ -994,7 +1276,7 @@ export function BasicDetailPanel({
       dropDetailAllCache([detailAllKey]);
       reloadDetailPage();
     }
-  }, [accountId, detailAllKey, hasDetailDateRange, pageSize, reloadDetailPage, safePage, serverDateRangeKey, t]);
+  }, [accountId, buildPageFilters, detailAllKey, hasDetailDateRange, pageSize, reloadDetailPage, safePage, serverDateRangeKey, t]);
 
   // 后台按「当前窗口」（默认就是设置里的观测年数）把整份明细读进缓存，与页码无关：
   // 之后翻到哪一页、把窗口缩小都只在本地切，不再产生请求。窗口放大到超出已拉范围时
@@ -1016,7 +1298,7 @@ export function BasicDetailPanel({
         key: detailAllKey,
         accountId: scope.accountId,
         range: detailAllRangeKey,
-        filters: moneyIncomeFilters,
+        filters: implicitFilters,
         errorMessage: t("basicDetail.loadFailed"),
       });
     };
@@ -1027,7 +1309,7 @@ export function BasicDetailPanel({
     const timer = window.setTimeout(start, DETAIL_PRELOAD_IDLE_DELAY_MS);
     // 期间又切了账户：这一份备料已经没人要了，别再压到服务端上。
     return () => window.clearTimeout(timer);
-  }, [clientPaginationEnabled, detailAll, detailAllKey, detailAllRangeKey, resolveDetailCacheScope, t]);
+  }, [clientPaginationEnabled, detailAll, detailAllKey, detailAllRangeKey, implicitFilters, resolveDetailCacheScope, t]);
 
   // 「全部」的加载由仓库推进，这里只订阅：整份到齐才重建表格（并发分块阶段
   // 只滚进度数字，不为每一块重建两万行），完成时收掉加载态。
@@ -1181,6 +1463,8 @@ export function BasicDetailPanel({
       //    处理 —— 触发宁可偏敏感，不能让刚记的一笔不出现。
       const impact = classifyFinanceEntryChange(detail);
       if (impact === "none") return;
+      // 行集合可能变了：取消筛选时绝不能拿修改前的第 1 页做瞬时还原。
+      unfilteredPageSnapshotRef.current = null;
 
       const eventAccountIds = detail.accountIds ?? [];
       const isCurrentAccountEvent = financeChangeAffectsAccount(
@@ -1261,6 +1545,7 @@ export function BasicDetailPanel({
           return;
         }
         reloadDetailPage();
+        void loadOriginalCount(detailDateRange);
         return;
       }
       const deletedSet = new Set(deletedEntryIds);
@@ -1285,12 +1570,13 @@ export function BasicDetailPanel({
         setLocalOriginalCount((count) => Math.max(0, count - removedCount));
       }
       if (!result.complete && !detailAll) reloadDetailPage();
+      void loadOriginalCount(detailDateRange);
     };
     window.addEventListener(FINANCE_DATA_CHANGED_EVENT, handleFinanceChange);
     return () => {
       window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handleFinanceChange);
     };
-  }, [accountId, accountKind, clientPaginationEnabled, detailAll, isInvestAccount, localEntries, openingBalance, refreshOnGlobalEvent, refreshTextOnlyPage, reloadDetailPage, router, scopeAccountIds, showRunningBalance]);
+  }, [accountId, accountKind, clientPaginationEnabled, detailAll, detailDateRange, isInvestAccount, loadOriginalCount, localEntries, openingBalance, refreshOnGlobalEvent, refreshTextOnlyPage, reloadDetailPage, router, scopeAccountIds, showRunningBalance]);
 
   // 取数实现放进 ref：下面这个 effect 只在「页码 / 页大小 / 时间范围」变的那一刻重取。
   // 不能把 reloadDetailPage 当依赖 —— 它随 openingBalancePending、缓存快照、期初余额换
@@ -1371,15 +1657,15 @@ export function BasicDetailPanel({
     // 还没取到过边界时，即使是打开弹层触发的也要显示「读取中」，否则弹层只会是一句
     // 「没有可用的日期范围」。
     if (!options?.silent || serverDateBoundsRef.current == null) setServerDateBoundsLoading(true);
-    fetch(`/api/v1/transactions/detail?${params.toString()}`, {
+    return fetch(`/api/v1/transactions/detail?${params.toString()}`, {
       cache: "no-store",
       signal: controller.signal,
     })
       .then(async (response) => {
         const payload = await response.json().catch(() => null);
-        if (!response.ok || !payload?.ok) return;
+        if (!response.ok || !payload?.ok) return null;
         const bounds = payload.data?.dateBounds;
-        if (!bounds || typeof bounds.min !== "string" || typeof bounds.max !== "string") return;
+        if (!bounds || typeof bounds.min !== "string" || typeof bounds.max !== "string") return null;
         const next = {
           min: bounds.min,
           max: bounds.max,
@@ -1394,10 +1680,12 @@ export function BasicDetailPanel({
             ? current
             : next
         ));
+        return next;
       })
       .catch((error) => {
-        if (isAbortError(error)) return;
+        if (isAbortError(error)) return null;
         console.error("Load transaction detail date bounds failed:", error);
+        return null;
       })
       .finally(() => {
         if (!controller.signal.aborted) setServerDateBoundsLoading(false);
@@ -1406,7 +1694,16 @@ export function BasicDetailPanel({
 
   /** 弹层打开时的补取：静默（不显示读取中）、3 秒内不重复发。 */
   const refreshServerDateBounds = useCallback(() => {
-    loadServerDateBounds({ silent: true });
+    void loadServerDateBounds({ silent: true });
+  }, [loadServerDateBounds]);
+
+  /**
+   * 导出弹层打开时取一次整份视图的边界：它不能拿当前表格的 rows 当初值，
+   * 那部分可能被时间轴和表头筛选裁过，导出窗口会跟着缩水。
+   */
+  const loadExportDefaultDateRange = useCallback(async () => {
+    const bounds = await loadServerDateBounds();
+    return bounds ? { start: bounds.min, end: bounds.max } : null;
   }, [loadServerDateBounds]);
 
   useEffect(() => {
@@ -1422,10 +1719,12 @@ export function BasicDetailPanel({
   /** 时间范围变化 = 数据范围变化：回到第 1 页并重新取数（不是本地筛当前页）。 */
   const handleDetailDateRangeChange = useCallback((next: { from: string; to: string }) => {
     setDetailDateRange(next);
+    // 分母跟着范围走：表头筛选不变，但可见记录总数变了。
+    void loadOriginalCount(next);
     // 按视图落盘：下次回到这个账户 / 刷新页面，首屏仍按这段范围取数。
     writeStoredDetailRangePreference(accountId, next.from || next.to ? next : null);
     goDetailPage(1);
-  }, [accountId, goDetailPage]);
+  }, [accountId, goDetailPage, loadOriginalCount]);
 
   /**
    * 当前页要显示的行：
@@ -1532,7 +1831,11 @@ export function BasicDetailPanel({
       locateDate: centerDate,
       pageSize: String(nextPageSize),
     });
-    // 定位/换页大小也在同一个数据范围内算页码，否则定位结果与表格不一致。
+    // 换页大小只是「一页装几行」，不是把筛选放开：定位必须带同一份 filters，
+    // 否则服务端按未筛选的结果算页码和 totalCount，表头会跳回全量条数。
+    const locateFilters = buildPageFilters();
+    if (Object.keys(locateFilters).length > 0) params.set("filters", JSON.stringify(locateFilters));
+    // 定位/换页大小也在同一个时间范围内算页码，否则定位结果与表格不一致。
     if (hasDetailDateRange) params.set("range", serverDateRangeKey);
     fetch(`/api/v1/transactions/detail?${params.toString()}`, { cache: "no-store" })
       .then(async (response) => {
@@ -1599,6 +1902,10 @@ export function BasicDetailPanel({
       locateDate: dateYmd,
       pageSize: String(locatePageSize),
     });
+    // 定位是「在筛选结果里翻到那天」，不是「回到未筛选的整份」：不带 filters
+    // 的话定位出的页码和 totalCount 都属于另一个结果集。
+    const locateFilters = buildPageFilters();
+    if (Object.keys(locateFilters).length > 0) params.set("filters", JSON.stringify(locateFilters));
     if (hasDetailDateRange) params.set("range", serverDateRangeKey);
     fetch(`/api/v1/transactions/detail?${params.toString()}`, { cache: "no-store" })
       .then(async (response) => {
@@ -1710,6 +2017,18 @@ export function BasicDetailPanel({
           dateRangeBoundsLoading={serverDateBoundsLoading}
           onDateRangeChange={handleDetailDateRangeChange}
           detailQueryRange={hasDetailDateRange ? serverDateRangeKey : undefined}
+          // 表头列筛选：分页模式 -> 下推服务端（作用于时间轴内的全部记录）；
+          // 「全部」模式整份都在本地，保持表格自己的本地筛选。
+          remoteTableFilters={!detailAll}
+          initialTableFilters={initialTableFilters}
+          onTableFiltersChange={handleTableFiltersChange}
+          // 筛选徽标按服务端口径报「筛选后/全部」：分页模式下表格只有一页行，
+          // 按页内行数算会显示成「23/23」，跟筛选无关。
+          filterCounts={!detailAll ? { filtered: localTotalCount, total: localOriginalCount } : undefined}
+          // 分页模式下 `rows` 只有当前页：漏斗候选值单独用「时间轴范围内的整份记录」
+          // 汇总，打开漏斗时取一次最新快照。
+          filterOptionRows={tableFilterOptionRows}
+          onFilterColumnOpen={handleTableFilterColumnOpen}
           reconcileEnabled={showReconcile}
           // 有明细筛选时列表由 RSC 的 entries prop 持有，DetailViewClient 的
           // 重取不带筛选参数，会把筛选结果冲掉 —— 交给上面的整棵刷新。
@@ -1749,17 +2068,23 @@ export function BasicDetailPanel({
                       title: t("basicDetail.exportExcelTitle"),
                       description: accountKind === "bank_credit" ? t("basicDetail.exportCreditDesc") : t("basicDetail.exportNormalDesc"),
                       dateColumnIndex: 0,
-                      // 初值取「这个账户最早 / 最晚的一条记录」（`bounds=1`，与时间轴
-                      // 双滑块同源），不受表格显示范围与分页影响。还没取到就回退到
-                      // 表格当前这段（`rows` 推导），不会给出空的日期框。
+                      // 初值取「这个视图最早 / 最晚的一条记录」（`bounds=1`），不取
+                      // 表格时间轴那一段。还没取到就回退到表格当前这段（`rows` 推导），
+                      // 不会给出空的日期框。
                       defaultDateRange: fullRangeExport && serverDateBounds
                         ? { start: serverDateBounds.min, end: serverDateBounds.max }
                         : undefined,
-                      // 有它，导出内容才是「账户 / 视图 × 所选日期区间」的整份明细，
-                      // 而不是表格当前显示的那几十行。
+                      // 弹层打开时再取一次：首屏的 idle 补取可能还没回来，不能让
+                      // 默认日期退回当前页 / 当前筛选结果的 rows 边界。
+                      loadDefaultDateRange: fullRangeExport ? loadExportDefaultDateRange : undefined,
+                      // 有它，导出内容才是「账户 / 视图 × 导出弹层所选日期区间」的
+                      // 整份明细：不继承表格时间轴，也不继承表头筛选。
                       loadRows: fullRangeExport
                         ? async ({ start, end }) => {
                           const params = new URLSearchParams({ accountId, export: "1" });
+                          // 导出是独立的只读动作：URL 的 filters / tableFilters 只用来
+                          // 恢复表格漏斗，绝不进入导出口径；range 也只取弹层里选的
+                          // 那一段，不是表格的显示范围。
                           if (start || end) params.set("range", `${start}~${end}`);
                           const response = await fetch(`/api/v1/transactions/detail?${params.toString()}`, { cache: "no-store" });
                           const payload = await response.json().catch(() => null);

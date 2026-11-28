@@ -85,6 +85,7 @@ import { loadRepoShellData } from "@/lib/server/repo-shell-data";
 import { computePositionDisplay } from "@/lib/invest-balance";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { compareDetailEntriesAsc, compareDetailEntriesDescBy, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
+import { parseDetailFiltersParam } from "@/lib/detail-search";
 import { rowWithLinkedInvestmentDisplayDate } from "@/lib/entry-reorder";
 import { loadEntryLinkedInvestmentDisplay } from "@/lib/server/entry-business-display";
 import { SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE,
@@ -379,6 +380,11 @@ export default async function Home({
     stockTab?: string;
     /** 绑定货基的钱包明细：1 = 表头「收益」开关勾上，列出货基收益行。 */
     showMoneyIncome?: string;
+    /**
+     * 明细筛选（服务端口径 JSON）。表头列筛选在分页模式下就下推到这里，
+     * 作用于「时间轴范围内的全部记录」，首屏第一页与 total 都按它算。
+     */
+    filters?: string;
     billMonth?: string;
     hideZeroBills?: string;
     hideSettledBills?: string;
@@ -678,6 +684,9 @@ export default async function Home({
           ...txRecordAccountScopeWhere(cashLedgerAccountIds),
           deletedAt: null,
           ...hid,
+          // 「全部记录」默认不列出余额校准行；它仍是合法余额锚点，
+          // 单账户明细照常显示，这里只裁多账户表的显示层。
+          AND: [{ OR: [{ source: null }, { source: { not: BALANCE_RECONCILE_SOURCE } }] }],
         }
       : { id: { in: [] as string[] } }
     : accountId
@@ -723,6 +732,11 @@ export default async function Home({
     needsDetailEntries &&
     ((view === "detail" && !!accountId) || (isAllCashView && cashLedgerAccountIds.length > 0)) &&
     !hasDetailFilters;
+  // 导出只按视图（第一层）重取整份数据：表格即使因为表头筛选关掉了服务端分页，
+  // 导出仍走服务端按账户 / 全部收支重取，不继承时间轴与表头筛选。
+  const canServerLoadDetailExport =
+    needsDetailEntries &&
+    ((view === "detail" && !!accountId) || (isAllCashView && cashLedgerAccountIds.length > 0));
   // Sidebar may opt into the browser's completed account snapshot. In that case
   // the client will render cached rows and revalidate them, so repeating the
   // full-ledger page query here only delays the route transition.
@@ -784,21 +798,61 @@ export default async function Home({
   const pagedDetailFetchRows = detailAll
     ? pagedDetailPageSize
     : Math.max(pageSize, DETAIL_PAGED_FIRST_FETCH_ROWS);
+  // 首屏那一页也要按显示层口径排除余额校准行，否则「共 N 条」和页码会把
+  // 隐藏的行算进去，翻页时还会冒出来。导出不走这里，仍是整份口径。
+  const pagedDetailScopedFilters = parseDetailFiltersParam(
+    Array.isArray(params?.filters) ? params.filters[0] : params?.filters,
+  ) ?? {};
+  // 默认隐藏口径（收益 / 余额校准）要保留在分母里；表头筛选不能进分母。
+  const implicitDetailHiddenOrigins = Array.from(new Set([
+    ...(showMoneyIncomeToggle && params?.showMoneyIncome !== "1"
+      ? [TRANSACTION_SOURCE_MONEY_INCOME]
+      : []),
+    ...(isAllCashView ? [BALANCE_RECONCILE_SOURCE] : []),
+  ]));
+  const pagedDetailHiddenOrigins = Array.from(new Set([
+    ...(pagedDetailScopedFilters.entryOriginNot ?? []),
+    ...implicitDetailHiddenOrigins,
+  ]));
   const pagedDetailData = usePagedDetailEntries && !useClientDetailCache
     ? await loadEntriesPageForAccount(
         isAllCashView ? cashLedgerAccountIds : accountId,
         // 绑货基的钱包 / 全部收支记录：「收益」开关没勾就在 SQL 显示层排除货基
         // 收益行；余额折叠链不过滤，收益仍然计入账户余额（只是不在表里列出）。
+        //
+        // 表头列筛选（分页模式下推）也从 URL 的 `filters` 进来：首屏第一页就是按
+        // 「时间轴范围内的全部记录」筛过的结果，`total` 也是筛选后的总数。
         JSON.stringify({
           ...hidFilter,
-          ...(showMoneyIncomeToggle && params?.showMoneyIncome !== "1"
-            ? { filters: { entryOriginNot: [TRANSACTION_SOURCE_MONEY_INCOME] } }
-            : {}),
+          filters: {
+            ...pagedDetailScopedFilters,
+            ...(pagedDetailHiddenOrigins.length > 0
+              ? { entryOriginNot: pagedDetailHiddenOrigins }
+              : {}),
+          },
         }),
         pagedDetailPage,
         pagedDetailPageSize,
         initialDetailRangeStr,
         pagedDetailFetchRows,
+      )
+    : null;
+  // 表头徽标的分母 = 当前视图/时间范围下未做表头筛选的总数。深链接直接带筛选时
+  // 首屏的 totalCount 已经是分子，必须另取一次只带默认隐藏口径的计数。
+  const hasPagedDetailTableFilters = Object.keys(pagedDetailScopedFilters).length > 0;
+  const unfilteredPagedDetailData = usePagedDetailEntries && !useClientDetailCache && hasPagedDetailTableFilters
+    ? await loadEntriesPageForAccount(
+        isAllCashView ? cashLedgerAccountIds : accountId,
+        JSON.stringify({
+          ...hidFilter,
+          filters: implicitDetailHiddenOrigins.length > 0
+            ? { entryOriginNot: implicitDetailHiddenOrigins }
+            : {},
+        }),
+        1,
+        1,
+        initialDetailRangeStr,
+        1,
       )
     : null;
 
@@ -1023,7 +1077,9 @@ export default async function Home({
     return true;
   });
   const detailFilteredCount = pagedDetailData?.totalCount ?? filteredEntries2.length;
-  const detailOriginalCount = pagedDetailData?.totalCount ?? entries.length;
+  const detailOriginalCount = unfilteredPagedDetailData?.totalCount
+    ?? pagedDetailData?.totalCount
+    ?? entries.length;
   const detailTotalPages = Math.max(1, Math.ceil(detailFilteredCount / pageSize));
   const focusEntryIndex = focusEntryId
     ? filteredEntries2.findIndex((entry) => entry.id === focusEntryId)
@@ -4109,9 +4165,9 @@ export default async function Home({
                   normalExportFilename={normalExportFilename}
                   normalExportRows={normalExportRows}
                   normalExportRowsByEntryId={normalExportRowsByEntryId}
-                  // 首屏行是服务端分页口径时，导出按所选日期区间重新取整份明细，
-                  // 不再只有当前页 / 当前显示范围那一段。
-                  fullRangeExport={usePagedDetailEntries}
+                  // 导出按视图重取整份明细：日期只取导出弹层自己选的那段，
+                  // 不继承表格时间轴，也不继承表头筛选。
+                  fullRangeExport={canServerLoadDetailExport}
                   // 明细表的「账户 / 相关账户」列可以指向任何类型的账户（基金、股票、保险、
                   // 定期、固定资产…），所以这里的显示选项必须是全量账户，否则列里只剩原始
                   // 账户名（例如只显示「基金」），既没有机构也没有 hover。批替换下拉仍然只

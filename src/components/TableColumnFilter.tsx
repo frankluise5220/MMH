@@ -137,20 +137,11 @@ export function TableColumnFilter({
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const [keyword, setKeyword] = useState("");
-  /** 弹窗内的勾选草稿：null 表示还没动过，沿用已应用的筛选值。 */
-  const [draftValues, setDraftValues] = useState<string[] | null>(null);
-  const draftRef = useRef<string[] | null>(null);
-
-  const updateDraft = useCallback((next: string[] | null) => {
-    draftRef.current = next;
-    setDraftValues(next);
-  }, []);
 
   useEffect(() => {
     if (!open) return;
     setKeyword("");
-    updateDraft(null);
-  }, [open, updateDraft]);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -179,50 +170,57 @@ export function TableColumnFilter({
   }, [filterOptionsByKeyword, keyword]);
 
   /** 空数组＝全选、__NO_MATCH__＝全不选，勾选状态永远按集合实际内容显示。 */
-  const baseSelectedValues = useMemo(() => (
+  const effectiveSelectedValues = useMemo(() => (
     selectedValues.length > 0
       ? selectedValues.filter((value) => value !== NO_MATCH_VALUE)
       : options
   ), [options, selectedValues]);
-  const effectiveSelectedValues = draftValues ?? baseSelectedValues;
 
-  const commitDraft = useCallback(() => {
-    const draft = draftRef.current;
-    if (draft == null) return false;
-    updateDraft(null);
-    if (draft.length === 0) {
+  /**
+   * 勾一下就地提交。
+   *
+   * 这里刻意**不做草稿**：用户单击选项的预期就是「表格立刻变」，攒到点「确定」才
+   * 生效会让人以为筛选坏了（2026-11-27 报障）。空集＝全不选、全选＝清除筛选，
+   * 与本地过滤模式、服务端下推模式共用同一套语义。
+   */
+  const commitValues = useCallback((values: string[]) => {
+    if (values.length === 0) {
       onChange([NO_MATCH_VALUE]);
-    } else if (draft.length === options.length && draft.every((value) => options.includes(value))) {
+    } else if (values.length === options.length && values.every((value) => options.includes(value))) {
       onChange([]);
     } else {
-      onChange(draft);
+      onChange(values);
     }
-    return true;
-  }, [onChange, options, updateDraft]);
+  }, [onChange, options]);
 
-  /** 关闭也提交勾选，保持旧版「勾一下就生效」的手感；确认则只是显式提交并收起弹窗。 */
-  const handleClose = useCallback(() => {
-    commitDraft();
-    onClose();
-  }, [commitDraft, onClose]);
+  /** 切换单个值（单击勾选框或整行）。 */
+  const toggleValue = useCallback((value: string) => {
+    // 未筛选时勾选框是全勾状态（"空数组＝全选"）。此时单击某一条，用户想要的是
+    // 「只看这一条」，按「取消勾选＝排除它」处理只会从 100 条变 99 条，看着像没反应。
+    if (selectedValues.length === 0) {
+      onChange([value]);
+      return;
+    }
+    const next = effectiveSelectedValues.includes(value)
+      ? effectiveSelectedValues.filter((item) => item !== value)
+      : Array.from(new Set([...effectiveSelectedValues, value]));
+    commitValues(next);
+  }, [commitValues, effectiveSelectedValues, onChange, selectedValues]);
 
-  useOutsideClose(rootRef, open, handleClose);
+  useOutsideClose(rootRef, open, onClose);
 
   function applyConfirm() {
-    if (!commitDraft()) {
-      // 没有手动改过勾选时，关键字仍按原语义批量应用；空关键字则保留现有筛选，不再清空。
-      const query = (inputRef.current?.value ?? keyword).trim();
-      if (query) {
-        const matchedOptions = filterOptionsByKeyword(query);
-        onChange(matchedOptions.length > 0 ? matchedOptions : [NO_MATCH_VALUE]);
-      }
+    // 关键字确定：把命中的候选值整批应用；一个都没命中时筛成空，而不是「什么都没发生」。
+    const query = (inputRef.current?.value ?? keyword).trim();
+    if (query) {
+      const matchedOptions = filterOptionsByKeyword(query);
+      commitValues(matchedOptions.length > 0 ? matchedOptions : [NO_MATCH_VALUE]);
     }
     onClose();
   }
 
   const keywordActive = keyword.trim().length > 0;
   const keywordMatchedCount = visibleOptions.length;
-  const hasDraft = draftValues !== null;
   // 选项名被截断时用统一提示补全文（与表头提示同一套视觉和 300ms 触发）。
   const optionHint = useHintTrigger();
   const triggerHint = useHint(`table-filter-trigger:${label}`, [{ label: filterTitle }]);
@@ -247,21 +245,18 @@ export function TableColumnFilter({
       <FilterPopover open={open} anchorRef={rootRef} className="h-96 min-h-52 min-w-56 max-w-[min(640px,90vw)] resize overflow-auto rounded-lg border border-slate-200 bg-white p-2 shadow-xl" height={384}>
           <div className="mb-2 flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
             <span className="text-xs font-medium text-slate-700">{filterTitle}</span>
-            <button aria-label={t("table.close")} type="button" onClick={handleClose} className="secondary-button inline-flex h-7 w-7 shrink-0 items-center justify-center px-0">
+            <button aria-label={t("table.close")} type="button" onClick={onClose} className="secondary-button inline-flex h-7 w-7 shrink-0 items-center justify-center px-0">
               <X className="h-4 w-4" />
             </button>
           </div>
           <div className="mb-2 flex items-center gap-2">
-            <button type="button" onClick={() => updateDraft(options)} className="rounded border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50">
+            <button type="button" onClick={() => commitValues(options)} className="rounded border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50">
               {t("table.selectAllValues")}
             </button>
-            <button type="button" onClick={() => updateDraft([])} className="rounded border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50">
+            <button type="button" onClick={() => commitValues([])} className="rounded border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50">
               {t("table.selectNoValues")}
             </button>
-            <button type="button" onClick={() => {
-              updateDraft(options);
-              onChange(undefined);
-            }} className="ml-auto text-xs text-blue-600 hover:text-blue-700">
+            <button type="button" onClick={() => onChange(undefined)} className="ml-auto text-xs text-blue-600 hover:text-blue-700">
               {t("table.clear")}
             </button>
           </div>
@@ -284,10 +279,10 @@ export function TableColumnFilter({
               onClick={applyConfirm}
               className="h-8 shrink-0 rounded border border-blue-200 bg-blue-50 px-3 text-xs text-blue-700 hover:bg-blue-100"
             >
-              {keywordActive && !hasDraft ? `${t("table.confirm")} (${keywordMatchedCount})` : t("table.confirm")}
+              {keywordActive ? `${t("table.confirm")} (${keywordMatchedCount})` : t("table.confirm")}
             </button>
           </div>
-          {keywordActive && !hasDraft ? (
+          {keywordActive ? (
             <div className="mb-2 rounded-md bg-blue-50 px-2 py-1 text-[11px] text-blue-700">
               {t("tableFilter.applyHint", { count: keywordMatchedCount })}
             </div>
@@ -300,6 +295,9 @@ export function TableColumnFilter({
               return (
                 <div
                   key={value}
+                  // 整行都可点：勾选框太小，用户经常点在行空白处，在那里没反应会被当成
+                  // 「筛选坏了」。点行 = 切换该值并立刻生效。
+                  onClick={() => toggleValue(value)}
                   onPointerEnter={(event) => {
                     if (event.pointerType === "touch" || title === value) return;
                     optionHint.enter(event.currentTarget, {
@@ -308,17 +306,15 @@ export function TableColumnFilter({
                     });
                   }}
                   onPointerLeave={() => optionHint.leave(`table-filter-option:${value}`)}
-                  className={`flex w-full items-center gap-2 rounded px-1 py-1 text-left text-xs ${
+                  className={`flex w-full cursor-pointer items-center gap-2 rounded px-1 py-1 text-left text-xs ${
                     checked ? "bg-blue-50 text-blue-700" : "text-slate-700 hover:bg-slate-50"
                   }`}
                 >
                   <button
                     type="button"
-                    onClick={() => {
-                      const next = effectiveSelectedValues.includes(value)
-                        ? effectiveSelectedValues.filter((item) => item !== value)
-                        : Array.from(new Set([...effectiveSelectedValues, value]));
-                      updateDraft(next);
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      toggleValue(value);
                     }}
                     className={`flex h-3.5 w-3.5 items-center justify-center rounded border text-[10px] ${
                       checked ? "border-blue-600 bg-blue-600 text-white" : "border-slate-300 bg-white text-transparent"
@@ -329,8 +325,9 @@ export function TableColumnFilter({
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
-                      updateDraft(null);
+                    // 点值本身 =「只看这一个」并收起弹窗，是用户最常用的单值快捷方式。
+                    onClick={(event) => {
+                      event.stopPropagation();
                       onChange([value]);
                       onClose();
                     }}

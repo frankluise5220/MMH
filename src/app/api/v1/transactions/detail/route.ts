@@ -482,16 +482,15 @@ function allowsZeroPostedAmountFx(body: Record<string, unknown>, type: unknown) 
 function assertSameWealthCurrency(
   cashAcc: { name?: string | null; currency?: string | null },
   wealthAcc: { name?: string | null; currency?: string | null },
-  wealthProduct: { name?: string | null; currency?: string | null },
 ) {
   const cashCurrency = normalizeCurrency(cashAcc.currency);
   const wealthCurrency = normalizeCurrency(wealthAcc.currency);
-  const productCurrency = normalizeCurrency(wealthProduct.currency);
+  // 只校验「资金账户 vs 理财账户」：跨币种用人民币资金买港币理财确实不通，需要换汇。
+  // 产品币种不参与：它是建主数据时落下的元数据（列为 NOT NULL DEFAULT 'CNY'），
+  // 同一只基金的美元/港币份额、以及历史上按当时账户币种落下的主数据都会与当前账户不一致，
+  // 拿它当闸门会让这些记录再也存不了（2026-11-27 用户报错）。
   if (cashCurrency !== wealthCurrency) {
     throw new Error(`理财资金账户与理财账户币种不一致。资金账户是 ${cashCurrency}，理财账户是 ${wealthCurrency}；请先换汇或选择同币种账户。`);
-  }
-  if (productCurrency !== wealthCurrency) {
-    throw new Error(`理财产品币种与理财账户不一致。产品是 ${productCurrency}，理财账户是 ${wealthCurrency}；请先换汇或选择同币种产品。`);
   }
 }
 
@@ -610,14 +609,16 @@ async function createSplitWealthTransactionFromBody(body: Record<string, unknown
       householdId,
       institutionId: wealthAcc.institutionId,
       productType: entryFundProductType === "advisor" ? "advisor" : "wealth",
-      currency: wealthAcc.currency,
-      fallbackCurrency: cashAcc?.currency,
+      // 产品币种跟随「买入账户」＝资金来源账户：这才是这笔买入实际结算的币种。
+      // 理财账户币种只作兜底（两者本就要求一致，见 assertSameWealthCurrency）。
+      currency: cashAcc?.currency,
+      fallbackCurrency: wealthAcc.currency,
       productId: wealthProductIdInput,
       name: productNameInput,
       annualRate,
     });
     if (!wealthProduct) throw new Error("请选择或新增理财产品");
-    if (cashAcc) assertSameWealthCurrency(cashAcc, wealthAcc, wealthProduct);
+    if (cashAcc) assertSameWealthCurrency(cashAcc, wealthAcc);
     if (!isCashIn && !isDividend && !isWriteOff) {
       await assertWealthUnitsWhenRequiredInTx(tx, {
         householdId,
@@ -845,14 +846,16 @@ async function editSplitWealthTransactionFromBody(body: Record<string, unknown>,
       householdId,
       institutionId: wealthAcc.institutionId,
       productType: editFundProductType === "advisor" ? "advisor" : "wealth",
-      currency: wealthAcc.currency,
-      fallbackCurrency: cashAcc?.currency,
+      // 产品币种跟随「买入账户」＝资金来源账户：这才是这笔买入实际结算的币种。
+      // 理财账户币种只作兜底（两者本就要求一致，见 assertSameWealthCurrency）。
+      currency: cashAcc?.currency,
+      fallbackCurrency: wealthAcc.currency,
       productId: wealthProductIdInput || wealthRow.wealthProductId,
       name: productNameInput || wealthRow.productName,
       annualRate,
     });
     if (!wealthProduct) throw new Error("请选择或新增理财产品");
-    if (cashAcc) assertSameWealthCurrency(cashAcc, wealthAcc, wealthProduct);
+    if (cashAcc) assertSameWealthCurrency(cashAcc, wealthAcc);
     if (!isCashIn && !isDividend && !isWriteOff) {
       await assertWealthUnitsWhenRequiredInTx(tx, {
         householdId,
@@ -2148,9 +2151,9 @@ export async function GET(req: Request) {
       });
     }
 
-    // 导出资金明细：按 `range` 把**整个视图**重新读一遍，不受分页 / 显示范围影响。
-    // 与列表同一套生效日与排序口径，行内容由 `@/lib/detail-export-rows` 统一生成，
-    // 与表格直接导出逐列一致。只在没有表头筛选时被调用（有筛选时用 RSC 那份行）。
+    // 导出资金明细：按视图（单账户 / 全部收支）重新读一遍，日期只取导出弹层
+    // 自己选的那一段。刻意不读取 `detailFilters`，也不继承表格时间轴的显示范围；
+    // 行内容由 `@/lib/detail-export-rows` 统一生成，与表格逐列一致。
     if (url.searchParams.get("export") === "1") {
       const exportRows = await buildDetailExportRowsForScope({
         scopeAccountId: allCashScope ? ALL_CASH_DETAIL_SCOPE_ID : accountId,
@@ -3079,8 +3082,9 @@ export async function POST(req: Request) {
               householdId,
               institutionId: investAcc.institutionId,
               productType: fundProductType === "advisor" ? "advisor" : "wealth",
-              currency: investAcc.currency,
-              fallbackCurrency: cashAcc?.currency,
+              // 产品币种跟随买入账户（资金来源）；投资账户币种兜底。
+              currency: cashAcc?.currency,
+              fallbackCurrency: investAcc.currency,
               productId: wealthProductIdInput,
               name: fundNameInput,
             })
@@ -3088,7 +3092,7 @@ export async function POST(req: Request) {
         if (isWealthLike && !wealthProduct) throw new Error("请选择或新增理财产品");
         if (isWealthLike && wealthProduct) {
           if (!cashAcc) throw new Error("请选择理财资金账户");
-          assertSameWealthCurrency(cashAcc, investAcc, wealthProduct);
+          assertSameWealthCurrency(cashAcc, investAcc);
         }
         const depositProduct = fundProductType === "deposit"
           ? await resolveOrCreateDepositProduct(tx, {
@@ -4106,9 +4110,8 @@ export async function PUT(req: Request) {
     if (productType === "metal" && !metalType) throw new Error("请选择贵金属品种");
     if (productType === "metal" && !metalUnit) throw new Error("请选择贵金属单位");
     const fundNameInput = String(body.fundName ?? "").trim();
-    // The funding cash account is resolved below this point (`cashAccId`), so
-    // the product's own account currency is the only fallback available here;
-    // `assertSameWealthCurrency` rejects a mismatch right after.
+    // 买入账户（`cashAccId`）在这之后才解析，这里只能先用投资账户币种建产品；
+    // 随后 `assertSameWealthCurrency` 会核对此币种与买入账户一致，不会留下偏差。
     const isWealthLikeProduct = productType === "wealth" || productType === "advisor";
     const wealthProduct = isWealthLikeProduct
       ? await resolveOrCreateWealthProduct(tx, {
@@ -4154,7 +4157,7 @@ export async function PUT(req: Request) {
         }
         if (isWealthLikeProduct && wealthProduct) {
           if (!cashAccId) throw new Error("请选择理财资金账户");
-          assertSameWealthCurrency({ name: cashAccName, currency: cashAccCurrency }, investAcc, wealthProduct);
+          assertSameWealthCurrency({ name: cashAccName, currency: cashAccCurrency }, investAcc);
         }
 
         let recordAccountId: string;

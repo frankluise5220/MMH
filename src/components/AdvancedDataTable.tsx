@@ -42,7 +42,26 @@ const usePaintEffect = typeof window === "undefined" ? useEffect : useLayoutEffe
 
 const HORIZONTAL_SCROLL_TOLERANCE_PX = 4;
 const ROW_VIRTUALIZATION_THRESHOLD = 200;
-const HEADER_SORT_CLICK_DELAY_MS = 220;
+const HEADER_SORT_CLICK_DELAY_MS = 300;
+/**
+ * 表头「双击」的自判窗口：超过这个间隔的两次点击算两次独立单击。
+ *
+ * 之所以自己判而不是靠浏览器 `dblclick` / `event.detail`：系统双击阈值（Windows 默认
+ * 500ms）比排序延时宽得多，手慢一点的两下点击就不再被合成双击，第二下既没有
+ * `detail === 2` 也不会发 `dblclick`——用户的心跳是「我双击开筛选」，实际发生的是
+ * 「排序被点了两下」，2026-11-27 报障「筛选变排序」。
+ */
+const HEADER_DOUBLE_CLICK_WINDOW_MS = 450;
+
+/**
+ * 表头点击记忆放在**模块级**，不是组件内的 ref。
+ *
+ * 排序会触发数据重载，父层多半给表格换一个 key 重新挂载，组件内的 ref 到第二下点击时
+ * 已经清空——实测间隔 300ms 的双击仍被认成两次单击，用户看到的就是「想双击筛选，
+ * 结果排序被点了两下」。按表格（`sortStorageKey`）分开存，超过双击窗口的记录自然失效。
+ */
+const headerClickMemory = new Map<string, { key: string; at: number }>();
+const headerSortUndoMemory = new Map<string, { key: string; snapshot: AdvancedDataTableSortState | null }>();
 /**
  * 长按整行进入拖拽的触发时长。400ms：短到不用刻意等，又长于普通点按的间隔，
  * 按住期间只做浅色高亮，不到点不起拖，不会和「滑动列表 / 点开记录」抢手势。
@@ -938,6 +957,47 @@ type AdvancedDataTableProps<T> = {
    * 「Maximum update depth exceeded」。初值注入没有这个回头路。
    */
   initialFilters?: Partial<Record<string, string[]>>;
+  /**
+   * 服务端筛选模式：列筛选不在这里过滤 `rows`（传进来的行已经是服务端筛过的结果），
+   * 变更只通过 `onFiltersChange` 上抛，由调用方下推服务端重取；也不读写 localStorage
+   * （筛选状态归调用方 / URL，多个账户共用一个 storage key 会互相污染）。
+   *
+   * 候选值仍按行汇总，只是不再用 `rows`：服务端分页下 `rows` 只有当前一页，
+   * 由调用方通过 `filterOptionRows` 把「时间轴范围内的整份记录」送进来，
+   * 这样漏斗里能看到全量候选值、计数也是全量计数（`rows` 仍然只决定显示哪些行）。
+   */
+  remoteFilters?: boolean;
+  /** 列筛选变更回调（`remoteFilters` 时表示需要下推服务端）。 */
+  onFiltersChange?: (filters: Partial<Record<string, string[]>>) => void;
+  /**
+   * 本地筛选模式（`remoteFilters=false`）也把筛选上抛给调用方。
+   *
+   * 只影响「是否通知」，不改变过滤行为、不读写 localStorage。用于把筛选外化到 URL 之类
+   * 的单一真源：明细页的「全部」模式由表格本地过滤，但筛选值必须和分页模式共用同一个
+   * URL 口径，否则从「全部」切回分页时真源切回 URL 里的旧条件，用户刚筛的结果会退回。
+   */
+  notifyLocalFiltersChange?: boolean;
+  /**
+   * 筛选徽标（`筛选后/全部`）的数字口径。
+   *
+   * `remoteFilters` 下 `rows` 只有当前一页，按 `filteredRows.length / rows.length` 算
+   * 出来恒等于「23/23」——徽标变得毫无信息量。调用方知道服务端口径的总数，传进来即可。
+   */
+  filterCounts?: { filtered: number; total: number };
+  /**
+   * 漏斗候选值的行集（缺省 = `rows`）。
+   *
+   * 与 `rows` 分开是刻意的：`remoteFilters` 下 `rows` 已是服务端筛过的一页，
+   * 拿它汇总只能看到「这一页出现过的值」。调用方传入时间轴范围内的整份记录，
+   * 候选值 / 计数 / 搜索文本就都按全量算；已选条件仍按 `excludeKey` 逻辑参与
+   * 联动（汇总 A 列时不含 A 列自己的筛选）。
+   */
+  filterOptionRows?: T[];
+  /**
+   * 某列漏斗被打开（双击表头 / 点漏斗）时回调。分页模式用它去同步一份最新的
+   * 全量行集给 `filterOptionRows` —— 后台备料是分块到达的，打开时取一次快照。
+   */
+  onFilterColumnOpen?: (columnKey: string) => void;
 };
 
 // Center a row inside the table viewport without scrolling ancestor containers.
@@ -1232,6 +1292,12 @@ export function AdvancedDataTable<T>({
   onDateRangeBoundsRefresh,
   dateRangeBoundsLoading = false,
   initialFilters,
+  remoteFilters = false,
+  onFiltersChange,
+  notifyLocalFiltersChange = false,
+  filterCounts,
+  filterOptionRows,
+  onFilterColumnOpen,
 }: AdvancedDataTableProps<T>) {
   const { t } = useI18n();
   const tf = (key: string, values: Record<string, string | number>) => {
@@ -1307,7 +1373,20 @@ export function AdvancedDataTable<T>({
   const initialFiltersRef = useRef(initialFilters);
   /** 已经 hydrate 过的 storage key，保证回填只做一次。 */
   const hydratedDisplayStateKeyRef = useRef<string | null>(null);
+  /** 服务端筛选模式下已经认过的数据集 key（换账户 / 换数据集要清掉旧筛选）。 */
+  const remoteFiltersScopeKeyRef = useRef<string | null>(null);
   const [activeFilterColumn, setActiveFilterColumn] = useState<string | null>(null);
+  /**
+   * 漏斗打开时通知调用方一次：分页模式下它据此把「时间轴范围内的整份记录」同步进
+   * `filterOptionRows`（后台备料分块到达，打开这一刻取最新快照就够）。
+   * 回调走 ref，避免调用方传内联函数时 effect 每次渲染都触发。
+   */
+  const onFilterColumnOpenRef = useRef(onFilterColumnOpen);
+  onFilterColumnOpenRef.current = onFilterColumnOpen;
+  useEffect(() => {
+    if (!activeFilterColumn) return;
+    onFilterColumnOpenRef.current?.(activeFilterColumn);
+  }, [activeFilterColumn]);
   const [sortState, setSortState] = useState<AdvancedDataTableSortState | null>(null);
   /**
    * 键盘导航的「活动行」：一次只在行之间移动一枚高亮，不把每一行都变成 Tab 停靠点
@@ -1532,6 +1611,28 @@ export function AdvancedDataTable<T>({
     // columns / filters 传内联对象时本 effect 会每渲染重跑，没有这道门的话
     // 每次渲染都拿初值覆盖 filters：刚点的「全部时间」被瞬间写回，再配上新对象
     // 触发渲染，就是「Maximum update depth exceeded」+ 页面一直闪。
+    // 服务端筛选模式：筛选态由调用方（URL / 查询串）持有，初值已进 useState，
+    // 不能再到 localStorage 里找 —— 那里存的是上一次本地筛选的旧条件，会莫名
+    // 生效到别的账户 / 别的日期范围上。
+    if (remoteFilters) {
+      // 筛选态由调用方（URL / 查询串）持有：初值已进 useState，不去 localStorage 找旧条件。
+      // 但换账户 / 换数据集（key 变）时，上一批行上的筛选不属于新数据集，必须清掉并回调，
+      // 否则查询串里还留着旧条件，新账户就只剩一个必然为空的结果。
+      const scopeKey = `${filtersStorageKey}|${resetDisplayStateOnMount ? "1" : "0"}`;
+      tableDisplayStateHydratedRef.current = true;
+      if (remoteFiltersScopeKeyRef.current === null) {
+        remoteFiltersScopeKeyRef.current = scopeKey;
+        return;
+      }
+      if (remoteFiltersScopeKeyRef.current === scopeKey) return;
+      remoteFiltersScopeKeyRef.current = scopeKey;
+      if (Object.keys(filters).length > 0) {
+        skipNextFiltersWriteRef.current = true;
+        setFilters({});
+        setActiveFilterColumn(null);
+      }
+      return;
+    }
     const hydrationKey = `${filtersStorageKey}|${sortStorageKey}|${resetDisplayStateOnMount ? "1" : "0"}`;
     if (hydratedDisplayStateKeyRef.current === hydrationKey) return;
     hydratedDisplayStateKeyRef.current = hydrationKey;
@@ -1579,10 +1680,11 @@ export function AdvancedDataTable<T>({
     }
     setActiveFilterColumn(null);
     tableDisplayStateHydratedRef.current = true;
-  }, [filtersStorageKey, persistedFilterKeys, resetDisplayStateOnMount, sortable, sortStorageKey, sortableColumnKeys]);
+  }, [filters, filtersStorageKey, persistedFilterKeys, remoteFilters, resetDisplayStateOnMount, sortable, sortStorageKey, sortableColumnKeys]);
 
   useEffect(() => {
     if (!tableDisplayStateHydratedRef.current) return;
+    if (remoteFilters) return;
     if (skipNextFiltersWriteRef.current) {
       skipNextFiltersWriteRef.current = false;
       return;
@@ -1592,7 +1694,23 @@ export function AdvancedDataTable<T>({
       Object.entries(filters).filter(([key]) => persistedFilterKeys.has(key)),
     ) as Partial<Record<string, string[]>>;
     writeJson(filtersStorageKey, persisted);
-  }, [filters, filtersStorageKey, persistedFilterKeys]);
+  }, [filters, filtersStorageKey, persistedFilterKeys, remoteFilters]);
+
+  /**
+   * 服务端筛选模式：筛选一变就上抛（跳过挂载时那一帧，初值不算一次「用户操作」）。
+   * 调用方通常据此重置到第 1 页并重取。
+   */
+  const onFiltersChangeRef = useRef(onFiltersChange);
+  onFiltersChangeRef.current = onFiltersChange;
+  const filtersNotifyMountedRef = useRef(false);
+  useEffect(() => {
+    if (!remoteFilters && !notifyLocalFiltersChange) return;
+    if (!filtersNotifyMountedRef.current) {
+      filtersNotifyMountedRef.current = true;
+      return;
+    }
+    onFiltersChangeRef.current?.(filters);
+  }, [filters, remoteFilters, notifyLocalFiltersChange]);
 
   useEffect(() => {
     if (!tableDisplayStateHydratedRef.current) return;
@@ -1627,9 +1745,13 @@ export function AdvancedDataTable<T>({
     if (resetKey == null) return;
     if (lastResetKeyRef.current === resetKey) return;
     lastResetKeyRef.current = resetKey;
-    // resetKey 只清瞬时 UI（打开的筛选弹层 / 待处理表头点击）。
+    // 只清「还没提交的表头单击」。
     // 排序和筛选跟 storageKey 走，翻页或切数据集时不得写空 localStorage。
-    setActiveFilterColumn(null);
+    //
+    // 这里刻意**不关**已打开的筛选弹层，也刻意**不清**表头点击记忆：
+    // resetKey 在每次筛选/排序/翻页后都会变，关弹层会让「勾选即生效」变成
+    // 「勾一下就没了」，也会把慢双击刚打开的弹层立刻关掉（2026-11-27 实测）；
+    // 清点击记忆则会让跨过一次数据重载的第二下点击认不出第一下。
     clearPendingHeaderSortClick();
   }, [clearPendingHeaderSortClick, resetKey]);
 
@@ -1890,9 +2012,15 @@ export function AdvancedDataTable<T>({
     if (column.filterKind === "dateRange" || column.filterKind === "numberRange" || column.filterKind === "text") {
       return empty;
     }
-    const baseRows = showFilters
-      ? rows.filter((row) => rowMatchesFilters(row, tableColumns, filters, { excludeKey: column.key }))
-      : rows;
+    // 候选值行集：分页模式下 `rows` 只是当前一页，调用方通过 `filterOptionRows`
+    // 送来「时间轴范围内的整份记录」——候选值、计数、搜索文本因此都是全量口径。
+    // 没送（或还没备好）时退回 `rows`，与本地模式行为一致。
+    const optionRows = filterOptionRows && filterOptionRows.length > 0 ? filterOptionRows : rows;
+    // 没有任何已选条件时不必逐行跑谓词（全量行集下这一步是纯浪费）。
+    const hasActiveFilters = Object.values(filters).some((values) => (values?.length ?? 0) > 0);
+    const baseRows = showFilters && hasActiveFilters
+      ? optionRows.filter((row) => rowMatchesFilters(row, tableColumns, filters, { excludeKey: column.key }))
+      : optionRows;
     const values = new Set<string>();
     const counts: Record<string, number> = {};
     const titles: Record<string, string> = {};
@@ -1923,7 +2051,7 @@ export function AdvancedDataTable<T>({
         Object.entries(searchTextParts).map(([value, parts]) => [value, Array.from(parts).join(" ")]),
       ),
     };
-  }, [activeFilterColumn, filters, rows, showFilters, tableColumns]);
+  }, [activeFilterColumn, filterOptionRows, filters, rows, showFilters, tableColumns]);
   /**
    * 时间筛选器的滑块刻度。
    *
@@ -1979,13 +2107,19 @@ export function AdvancedDataTable<T>({
   const filteredRows = useMemo(() => {
     const scoped = rowsInDateRange;
     if (!showFilters) return scoped;
+    // 服务端筛选模式：行已经是服务端按同一批条件筛过的结果，再本地筛一次会把
+    // 当前页再切碎（而且页是服务端按筛选后总数切的，本地一筛就空）。
+    if (remoteFilters) return scoped;
     if (filterRows) return filterRows(scoped, filters, tableColumns);
     const activeFilters = Object.entries(filters).filter(([, values]) => (values?.length ?? 0) > 0);
     if (activeFilters.length === 0) return scoped;
     return scoped.filter((row) => rowMatchesFilters(row, tableColumns, filters));
-  }, [dateRangeColumnKey, filterRows, filters, rows, rowsInDateRange, showFilters, tableColumns]);
+  }, [dateRangeColumnKey, filterRows, filters, remoteFilters, rows, rowsInDateRange, showFilters, tableColumns]);
 
   useEffect(() => {
+    // 服务端筛选下「这一页空了」很正常（条件更严格、或筛选后只有一页），
+    // 不能把用户的筛选条件当成写错清掉。
+    if (remoteFilters) return;
     if (!showFilters || filteredRows.length > 0) return;
     // 范围不同、口径也不同：范围把当前页筛空了不代表列筛选写错了，
     // 不能顺手把用户的列筛选清掉。
@@ -1995,7 +2129,7 @@ export function AdvancedDataTable<T>({
     if (activeValues.some((values) => values?.includes("__NO_MATCH__"))) return;
     setFilters({});
     setActiveFilterColumn(null);
-  }, [filteredRows.length, filters, hasActiveDateRange, rows.length, showFilters]);
+  }, [filteredRows.length, filters, hasActiveDateRange, remoteFilters, rows.length, showFilters]);
 
   const orderedRows = useMemo(() => {
     if (!sortable || !sortState) return filteredRows;
@@ -2936,37 +3070,53 @@ export function AdvancedDataTable<T>({
     });
   }
 
-  function handleHeaderSortClick(event: ReactMouseEvent<HTMLElement>, key: string, canOpenFilter: boolean) {
+  /**
+   * 表头文字的唯一入口：单击排序、双击开筛选。
+   *
+   * 双击由这里自己识别（`HEADER_DOUBLE_CLICK_WINDOW_MS`），不依赖浏览器 `dblclick`：
+   * 慢一点的两次点击会被浏览器当成两次独立单击，那套判定给不出第二语义，用户就只能
+   * 眼睁睁看着排序被点起来（2026-11-27 报障）。第一下若已经排过序，第二下顺手回滚。
+   */
+  function handleHeaderLabelClick(key: string, options: { sortable: boolean; canOpenFilter: boolean }) {
+    const { sortable, canOpenFilter } = options;
+    const memoryKey = sortStorageKey;
     // 表头拖拽落幕后浏览器会在源表头补一个 click：吞掉，不触发排序。
     if (suppressHeaderSortClickRef.current) {
       suppressHeaderSortClickRef.current = false;
       clearPendingHeaderSortClick();
+      headerClickMemory.delete(memoryKey);
       return;
     }
     if (!canOpenFilter) {
-      toggleSort(key);
+      // 这一列没有可筛选的值（勾选列 / 操作列）：双击没有第二语义，点一下就是排序。
+      headerClickMemory.delete(memoryKey);
+      headerSortUndoMemory.delete(memoryKey);
+      if (sortable) toggleSort(key);
       return;
     }
-    if (event.detail > 1) {
+    const now = performance.now();
+    const last = headerClickMemory.get(memoryKey);
+    const isDoubleClick = !!last && last.key === key && now - last.at <= HEADER_DOUBLE_CLICK_WINDOW_MS;
+    if (isDoubleClick) headerClickMemory.delete(memoryKey);
+    else headerClickMemory.set(memoryKey, { key, at: now });
+    if (isDoubleClick) {
       clearPendingHeaderSortClick();
-      if (sortState?.key === key && sortState.direction === "desc") {
-        toggleSort(key);
-      }
+      const undo = headerSortUndoMemory.get(memoryKey);
+      headerSortUndoMemory.delete(memoryKey);
+      // 慢速双击：第一下已经排过序了，回滚掉再开筛选，别留下「想筛选却变成排序」。
+      if (undo && undo.key === key) setSortState(undo.snapshot);
+      setActiveFilterColumn(key);
       return;
     }
+    headerSortUndoMemory.delete(memoryKey);
+    if (!sortable) return;
     clearPendingHeaderSortClick();
+    const snapshot = sortState;
     headerSortClickTimerRef.current = window.setTimeout(() => {
       headerSortClickTimerRef.current = null;
       toggleSort(key);
+      headerSortUndoMemory.set(memoryKey, { key, snapshot });
     }, HEADER_SORT_CLICK_DELAY_MS);
-  }
-
-  function handleHeaderLabelDoubleClick(event: ReactMouseEvent<HTMLElement>, key: string, canOpenFilter: boolean) {
-    if (!canOpenFilter) return;
-    event.preventDefault();
-    event.stopPropagation();
-    clearPendingHeaderSortClick();
-    setActiveFilterColumn(key);
   }
 
   function handleRowDragStart(event: ReactDragEvent<HTMLElement>, key: string, dragDisabled: boolean) {
@@ -3560,8 +3710,8 @@ export function AdvancedDataTable<T>({
   ) : null;
   const filterStateBadge = hasAnyFilters ? (
     <AdvancedDataTableFilterStateBadge
-      filteredCount={filteredRows.length}
-      totalCount={rows.length}
+      filteredCount={filterCounts?.filtered ?? filteredRows.length}
+      totalCount={filterCounts?.total ?? rows.length}
       onClear={clearFilters}
     />
   ) : null;
@@ -4036,15 +4186,16 @@ export function AdvancedDataTable<T>({
                       {sortableColumn ? (
                         <span
                           className={`block min-w-0 truncate cursor-pointer select-none text-xs font-semibold transition-transform duration-200 ${sortState?.key === column.key ? "text-purple-600" : (filters[column.key]?.length ?? 0) > 0 ? "text-purple-600" : "text-slate-600"} ${sortState?.key === column.key && sortState.direction === "desc" ? "rotate-180" : ""}`}
-                          onClick={(event) => handleHeaderSortClick(event, column.key, showFilters && !!column.filterText)}
-                          onDoubleClick={(event) => handleHeaderLabelDoubleClick(event, column.key, showFilters && !!column.filterText)}
+                          onClick={() => handleHeaderLabelClick(column.key, { sortable: true, canOpenFilter: showFilters && !!column.filterText })}
                         >
                           {labelText(column.label, column.key)}
                         </span>
                       ) : (
                         <span
                           className={`block min-w-0 truncate text-xs font-semibold ${((filters[column.key]?.length ?? 0) > 0) ? "text-purple-600" : "text-slate-600"} ${showFilters && column.filterText ? "cursor-pointer hover:text-purple-600" : ""}`}
-                          onDoubleClick={(event) => handleHeaderLabelDoubleClick(event, column.key, showFilters && !!column.filterText)}
+                          onClick={showFilters && column.filterText
+                            ? () => handleHeaderLabelClick(column.key, { sortable: false, canOpenFilter: true })
+                            : undefined}
                         >
                           {labelText(column.label, column.key)}
                         </span>

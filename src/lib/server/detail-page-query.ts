@@ -243,6 +243,7 @@ function buildOrderingCtesSql(args: {
     t."accountName",
     t."toAccountId",
     t."categoryName",
+    t."categoryId",
     t."note",
     t."currency",
     t."toNote",

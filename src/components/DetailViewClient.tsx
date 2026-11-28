@@ -425,6 +425,8 @@ function buildBasicEntryEditPayload(entry: DetailEntry, currentAccountId?: strin
 
 type DetailAccountOption = {
   id: string;
+  /** 账户原始名；URL 上的 tableFilters 可能用它，反查服务端 related id 时要能命中。 */
+  name?: string | null;
   label: string;
   /** 下拉行右侧的补充说明（账户种类/所有人），与表单下拉同源。 */
   subLabel?: string | null;
@@ -728,6 +730,29 @@ function investmentCategoryLabel(
   return "";
 }
 
+/**
+ * 读**此刻**地址栏上的表头筛选（展示口径）。
+ *
+ * 不能拿 RSC 首屏的 props 代替：表头筛选写 URL 走的是 `replaceState`，props 不会跟着变，
+ * 一旦后续逻辑（比如从「全部」切回按页显示）拿首屏那份往回写，用户刚改的筛选就被旧值覆盖。
+ */
+function readLocationTableFilters(): Record<string, string[]> | null {
+  if (typeof window === "undefined") return null;
+  const raw = new URL(window.location.href).searchParams.get("tableFilters");
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const out: Record<string, string[]> = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (Array.isArray(value) && value.length > 0) out[key] = value.map(String);
+    }
+    return Object.keys(out).length > 0 ? out : null;
+  } catch {
+    return null;
+  }
+}
+
 /* Component */
 
 export function DetailViewClient({
@@ -782,6 +807,12 @@ export function DetailViewClient({
   dateRangeBoundsLoading = false,
   detailQueryRange,
   initialFilters,
+  initialTableFilters,
+  onTableFiltersChange,
+  remoteTableFilters = false,
+  filterOptionRows,
+  onFilterColumnOpen,
+  filterCounts,
 }: {
   accountId: string;
   isInvestAccount: boolean;
@@ -857,6 +888,38 @@ export function DetailViewClient({
   dateRangeBoundsLoading?: boolean;
   /** 挂载时的初始筛选（默认只看最近 5 年），仅作初值，不进 effect。 */
   initialFilters?: Partial<Record<string, string[]>>;
+  /**
+   * 表头列筛选的初值（**展示值口径**，与漏斗里显示的选项同一套文本）。
+   * 分页模式下它由 URL 恢复，再由 `onTableFiltersChange` 翻译成服务端口径。
+   */
+  initialTableFilters?: Partial<Record<string, string[]>>;
+  /**
+   * 表头列筛选变化，两份口径一起抛：
+   *  - `display` 写进 URL 用来恢复漏斗的勾选态（用户看到的文本）；
+   *  - `server` 写进 URL 给表格查询用（account → accountId、category → categoryId…）。
+   *  导出不继承这两份口径，它有自己的日期区间。
+   */
+  onTableFiltersChange?: (filters: {
+    display: Partial<Record<string, string[]>>;
+    server: Record<string, string[]>;
+  }) => void;
+  /**
+   * 表头列筛选是否交给服务端：分页模式打开 —— 此时筛选作用于「时间轴范围内的
+   * 全部记录」，不再只筛当前这一页；「全部」模式仍是整份在本地，无需下推。
+   */
+  remoteTableFilters?: boolean;
+  /**
+   * 漏斗候选值的行集（分页模式）：时间轴范围内的整份记录，由父层从后台备料里取。
+   * 缺省时表格退回当前页汇总 —— 候选值只有这一页出现过的值。
+   */
+  filterOptionRows?: DetailEntry[];
+  /** 某列漏斗被打开：父层据此同步一次最新的全量行集。 */
+  onFilterColumnOpen?: (columnKey: string) => void;
+  /**
+   * 筛选徽标的数字口径（`筛选后/全部`）。分页模式下表格只有一页行，按页内行数算会显示
+   * 成「23/23」；由父层给出服务端口径的总数。
+   */
+  filterCounts?: { filtered: number; total: number };
   /** Extra batch actions rendered next to the built-in replace/delete buttons.
    * Receives the exact rows the table is rendering, so selection keys always
    * resolve against the same array the user sees. */
@@ -1127,14 +1190,21 @@ export function DetailViewClient({
   const [refreshedEntries, setRefreshedEntries] = useState<{ accountId: string; entries: DetailEntry[] } | null>(null);
   const [linkingIds, setLinkingIds] = useState<Set<string>>(new Set());
   const entries = refreshedEntries?.accountId === accountId ? refreshedEntries.entries : initialEntries;
-  const visibleEntries = useMemo(
-    () => (showMoneyIncomeToggle && !showMoneyIncome
+  const hideBalanceReconcile = isAllCashDetailScope(accountId);
+  const visibleEntries = useMemo(() => {
+    let rows = entries;
+    if (showMoneyIncomeToggle && !showMoneyIncome) {
       // 「收益」开关关闭：兜底挡掉货基结转行。「全部」模式的数据来自整份明细缓存，
       // 那条加载路径不带服务端 filters，必须在这里再挡一次才不会漏出来。
-      ? entries.filter((entry) => entry.source !== TRANSACTION_SOURCE_MONEY_INCOME)
-      : entries),
-    [entries, showMoneyIncomeToggle, showMoneyIncome],
-  );
+      rows = rows.filter((entry) => entry.source !== TRANSACTION_SOURCE_MONEY_INCOME);
+    }
+    // 「全部记录」默认不列余额校准行：首屏 / 分页 / 整份缓存任何一条路径漏出来，
+    // 都在这里兜底挡住；单账户明细仍照常显示。
+    if (hideBalanceReconcile) {
+      rows = rows.filter((entry) => entry.source !== BALANCE_RECONCILE_SOURCE);
+    }
+    return rows;
+  }, [entries, hideBalanceReconcile, showMoneyIncome, showMoneyIncomeToggle]);
   const linkDetailCashFlow = useCallback(async (entry: DetailEntry) => {
     const id = String(entry.id ?? "").trim();
     if (!id || linkingIds.has(id)) return;
@@ -2005,6 +2075,10 @@ export function DetailViewClient({
       width: 220,
       minWidth: 120,
       hideable: true,
+      // 备注是自由文本，几乎每行都不同：走多选下拉就是「对整份已加载行做 distinct 汇总」，
+      // 「全部」模式下 4 万行等于建 4 万个选项 —— 打开一次卡一次，而且这几万个选项也没法选。
+      // 改走文本框包含匹配（`filterKind: "text"`）：零汇总、输入即筛。
+      filterKind: "text",
       filterText: (e) => displayDetailRemark(e, flowAccountIdOf(e)),
       render: (e) => {
         const text = displayDetailRemark(e, flowAccountIdOf(e));
@@ -2087,6 +2161,133 @@ export function DetailViewClient({
     </div>
   ) : undefined;
   const tableResetKey = resetKey ?? `${accountId}:detail-table`;
+  /**
+   * 表头列筛选（展示值）→ 服务端筛选（原始值口径）。
+   *
+   * 漏斗的候选值就是「用户看到的文本」（账户展示名、分类展示名、类型标签），而服务端
+   * 谓词认的是 accountId / categoryId / type 这些原始值：这里拿**已加载的行**把展示值
+   * 反查回原始值。反查不到（该值不在当前这批行里）就退回原文本 —— 服务端的 account
+   * 谓词同时认 id 与 name，其它列最多筛成空，不会筛出一批无关的行。
+   */
+  /**
+   * 「关联账户」列的展示 label → 账户 id。
+   *
+   * 只靠行反查不够：从 URL 恢复筛选时表格只有首屏那一页（几十行），用户勾的账户
+   * 往往不在这页里，漏斗候选快照也只有「打开漏斗」时才备好。账户清单是全量的，
+   * 用它兜底才能把恢复出来的勾选真的下推成服务端条件（否则条件被丢掉，界面看起来
+   * 就是「勾了筛选还是全部记录」）。
+   */
+  const accountIdByFilterLabel = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const option of accountOptions) {
+      const label = accountDisplayFallback(option.id, null).label;
+      if (label) map.set(label, option.id);
+      // `name` 是账户原始名，URL 上的 tableFilters 可能是它（例如从别处带过来的
+      // 深链），不能因为漏斗候选快照还没加载就反查落空、把 filters 整列删掉。
+      for (const alias of [option.name, option.label, option.fullLabel, option.listLabel, option.selectorLabel]) {
+        if (alias && !map.has(alias)) map.set(alias, option.id);
+      }
+    }
+    return map;
+  }, [accountDisplayFallback, accountOptions]);
+  const translateTableFilters = useCallback((raw: Partial<Record<string, string[]>>): Record<string, string[]> => {
+    const server: Record<string, string[]> = {};
+    /**
+     * 反查口径必须是「时间轴范围内的整份记录」，不能用 `visibleEntries`（分页模式下只有
+     * 当前一页）。漏斗候选值已经是全量了，用户勾一个只存在于其它页的分类时，拿当前页
+     * 反查必然落空 —— 条件被整列丢弃，表现就是「单击筛选没反应」。
+     */
+    const lookupRows = filterOptionRows && filterOptionRows.length > 0 ? filterOptionRows : visibleEntries;
+    const findRow = (key: string, value: string) => {
+      const column = columns.find((item) => item.key === key);
+      if (!column?.filterText) return undefined;
+      return lookupRows.find((row) => String(column.filterText?.(row) ?? "") === value);
+    };
+    for (const [key, values] of Object.entries(raw)) {
+      const list = (values ?? []).filter((value) => value && value !== "__NO_MATCH__");
+      if (list.length === 0) {
+        // 「全不选」：本地模式筛成空行；服务端没有可下推的列值，用一个恒假条件表达，
+        // 否则条件被直接丢掉，表格会照旧显示全部。
+        if ((values ?? []).includes("__NO_MATCH__")) server.emptyResult = ["1"];
+        continue;
+      }
+      switch (key) {
+        case "date":
+        case "postedAt":
+        case "createdAt":
+        case "updatedAt":
+        case "inflow":
+        case "outflow":
+        case "currency":
+          // 范围型 / 枚举型：展示值就是服务端值，原样下推。
+          server[key] = list;
+          break;
+        case "account": {
+          // 能全部反查回 accountId 就用 id（精确）；只要有一个落空就整列退回展示文本
+          // —— 服务端 account 谓词同时认 id 与 name，至少不会把条件丢掉。
+          const ids = list.map((value) => {
+            const row = findRow("account", value);
+            return row ? (accountColumnDisplayFallback(row).id ?? "") : "";
+          });
+          server.account = ids.every(Boolean) ? Array.from(new Set(ids)) : list;
+          break;
+        }
+        case "category": {
+          // 同上：名称就是服务端的 category 谓词口径（`categoryName IN (...)`），
+          // 反查不到 id 时按名称下发，绝不能静默丢弃（否则勾了没有任何反应）。
+          const ids = list.map((value) => findRow("category", value)?.categoryId ?? "");
+          if (ids.every(Boolean)) server.categoryId = Array.from(new Set(ids));
+          else server.category = list;
+          break;
+        }
+        case "type": {
+          // 类型列展示的是 activityLabel（含子类型），服务端只有 4 个 type：
+          // 把「基金买入」写成 type=investment 会筛出一整批其它投资行，比勾选宽。
+          // 所以只在这批值全部能反查时才下推；反查不到就整列不下推（宁可无变化，
+          // 也不要筛出无关行）。
+          const types = list.map((value) => findRow("type", value)?.type ?? "");
+          if (types.every(Boolean)) server.type = Array.from(new Set(types));
+          break;
+        }
+        case "remark": {
+          // 备注列是文本框（包含匹配），服务端 remark 谓词按 LIKE 处理；只取第一个词。
+          const text = list[0]?.trim();
+          if (text) server.remark = [text];
+          break;
+        }
+        case "related": {
+          // 关联账户列的漏斗值是「账户展示 label」（可能带机构前缀），服务端只认账户 id。
+          // 反查不到 id 就整列不下推：宁可无变化，也不要拿展示文本去撞 id 谓词筛出 0 行。
+          const ids = list.map((value) => {
+            const row = findRow("related", value);
+            const rowId = row ? relatedAccountTarget(row).id ?? "" : "";
+            return rowId || accountIdByFilterLabel.get(value) || "";
+          });
+          if (ids.every(Boolean)) server.related = Array.from(new Set(ids));
+          break;
+        }
+        default:
+          // counterpartyInstitution / tags / balance / profit：服务端没有对应谓词。
+          // 宁可不下推，也不要拿错列筛出一批看似无关的行。
+          break;
+      }
+    }
+    return server;
+  }, [accountColumnDisplayFallback, accountIdByFilterLabel, columns, filterOptionRows, relatedAccountTarget, visibleEntries]);
+  /** URL 恢复出来的表头筛选：初值不会触发表格的 onFiltersChange，这里主动抛一次。 */
+  const tableFiltersPushedRef = useRef(false);
+  useEffect(() => {
+    if (!remoteTableFilters || tableFiltersPushedRef.current) return;
+    tableFiltersPushedRef.current = true;
+    // 必须读**此刻**的地址栏，不能读首屏那份 `initialTableFilters`：从「全部」切回分页
+    // 才第一次进入这个分支，期间用户可能已经改过筛选（写 URL 走的是 replaceState，props
+    // 不会跟着变），拿冻结的那份推回去等于把旧筛选复活 —— 用户看到的就是「切每页行数后
+    // 筛选结果跳回上一次的选择」。
+    const initial = readLocationTableFilters();
+    if (!initial) return;
+    onTableFiltersChange?.({ display: initial, server: translateTableFilters(initial) });
+    // 只在进入分页模式后跑一次：之后由表格的 onFiltersChange 驱动。
+  }, [onTableFiltersChange, remoteTableFilters, translateTableFilters]);
   const mobileGroups = useMemo(() => {
     if (!isMobileDevice) return [];
     const groups: Array<{ date: string; entries: DetailEntry[] }> = [];
@@ -2205,7 +2406,23 @@ export function DetailViewClient({
       dateRangeBounds={dateRangeBounds}
       onDateRangeBoundsRefresh={onDateRangeBoundsRefresh}
       dateRangeBoundsLoading={dateRangeBoundsLoading}
-      initialFilters={initialFilters}
+      // 表头筛选只有一个真源：URL 里的 tableFilters。分页模式必须用它（条件同时下推服务端）；
+      // 「全部」模式整份已在本地，但 URL 上有表头筛选时也要按它恢复，否则刷新后勾选态会
+      // 和地址栏对不上（下次切回分页时又跳成另一套条件）。
+      initialFilters={remoteTableFilters || Object.keys(initialTableFilters ?? {}).length > 0 ? initialTableFilters : initialFilters}
+      // 分页模式：筛选下推服务端（作用于时间轴范围内的全部记录），表格不再本地过滤；
+      // 「全部」模式整份都在本地，保持原样。
+      remoteFilters={remoteTableFilters}
+      // 但筛选值本身只有一个真源：URL。分页模式是下推服务端；「全部」模式由表格本地过滤，
+      // 也要把条件外化到 URL —— 否则从「全部」改成按页显示（切每页行数）时，真源切回 URL
+      // 里的旧条件，用户刚筛出来的结果会静默退回上一次的筛选。
+      notifyLocalFiltersChange={!remoteTableFilters}
+      onFiltersChange={(next) => onTableFiltersChange?.({ display: next, server: translateTableFilters(next) })}
+      // 漏斗候选值：分页模式下按「时间轴范围内的整份记录」汇总，而不是当前页；
+      // 「全部」模式下 rows 本来就是全量，不需要再送一份。
+      filterOptionRows={remoteTableFilters ? filterOptionRows : undefined}
+      onFilterColumnOpen={remoteTableFilters ? onFilterColumnOpen : undefined}
+      filterCounts={remoteTableFilters ? filterCounts : undefined}
       rowKey={detailEntryRowKey}
       minTableWidth={1160}
       emptyText={resolvedEmptyText}
