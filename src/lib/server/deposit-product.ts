@@ -20,13 +20,9 @@ function parsePositiveNumber(raw: unknown) {
   return Number.isFinite(value) && value > 0 ? value : null;
 }
 
-function sameNameCurrencyError(existingCurrency: string, requestedCurrency: string) {
-  return `Same-name deposit product already exists, but its currency is ${existingCurrency}; the current currency is ${requestedCurrency}`;
-}
-
 /**
  * Resolves an institution-scoped deposit product master.
- * Identity is household + institution + name. Currency mismatch on the same name is an error.
+ * Identity is household + institution + name. Currency is product metadata, not part of the identity.
  * Per-lot rate/term stay on the deposit record; product defaults are optional fill-ins.
  *
  * `productId` 是主键级身份，优先于「机构 + 名称」：household 内命中即采用。
@@ -55,9 +51,8 @@ export async function resolveOrCreateDepositProduct(tx: Db, input: ResolveDeposi
       where: { id: productId, householdId },
     });
     if (byId) {
-      if (requestedCurrency && normalizeCurrency(byId.currency) !== targetCurrency) {
-        throw new Error(sameNameCurrencyError(normalizeCurrency(byId.currency), targetCurrency));
-      }
+      // 币种不参与产品身份：按 id 命中即采用该产品，币种沿用主数据，
+      // 不因当前存款账户是另一种币种而抛错（2026-11-27 统一口径）。
       // 迁移遗留的产品 institutionId = NULL，而 GET /api/v1/deposit-products 按机构过滤，
       // 这类产品在任何机构的下拉里都查不到（实测：库中 7 条）。被某机构下的存单引用时
       // 就地收敛：该机构已有同名产品（唯一键 householdId+institutionId+name）则改指那条，
@@ -66,12 +61,7 @@ export async function resolveOrCreateDepositProduct(tx: Db, input: ResolveDeposi
         const twin = await tx.depositProduct.findFirst({
           where: { householdId, institutionId, name: byId.name },
         });
-        if (twin) {
-          if (normalizeCurrency(twin.currency) !== targetCurrency) {
-            throw new Error(sameNameCurrencyError(normalizeCurrency(twin.currency), targetCurrency));
-          }
-          return twin;
-        }
+        if (twin) return twin;
         return tx.depositProduct.update({
           where: { id: byId.id },
           data: { institutionId },
@@ -86,12 +76,7 @@ export async function resolveOrCreateDepositProduct(tx: Db, input: ResolveDeposi
   const existing = await tx.depositProduct.findFirst({
     where: { householdId, institutionId, name },
   });
-  if (existing) {
-    if (normalizeCurrency(existing.currency) !== targetCurrency) {
-      throw new Error(sameNameCurrencyError(normalizeCurrency(existing.currency), targetCurrency));
-    }
-    return existing;
-  }
+  if (existing) return existing;
 
   return tx.depositProduct.create({
     data: {

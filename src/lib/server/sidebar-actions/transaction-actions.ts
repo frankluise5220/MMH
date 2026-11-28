@@ -554,8 +554,9 @@ async function createSplitWealthTransaction(
       householdId,
       institutionId: wealthAcc.institutionId,
       productType: entryFundProductType === "advisor" ? "advisor" : "wealth",
-      currency: wealthAcc.currency,
-      fallbackCurrency: cashAcc.currency,
+      // 产品币种跟随买入账户（资金来源账户）；理财账户币种兜底。
+      currency: cashAcc.currency,
+      fallbackCurrency: wealthAcc.currency,
       productId: wealthProductIdInput,
       name: productNameInput,
       annualRate,
@@ -1357,7 +1358,8 @@ export async function createTransaction(formData: FormData) {
               householdId,
               institutionId: investAcc.institutionId,
               productType: fundProductType === "advisor" ? "advisor" : "wealth",
-              currency: recordCurrency,
+              // 买入账户（资金来源）优先，其次表单记录的币种，最后投资账户。
+              currency: cashAcc?.currency ?? recordCurrency,
               fallbackCurrency: investAcc.currency,
               productId: wealthProductIdInput,
               name: fundNameInput,
@@ -1838,8 +1840,9 @@ async function editSplitWealthTransaction(
       householdId,
       institutionId: wealthAcc.institutionId,
       productType: wealthAcc.investProductType === "advisor" ? "advisor" : "wealth",
-      currency: wealthAcc.currency,
-      fallbackCurrency: cashAcc.currency,
+      // 产品币种跟随买入账户（资金来源账户）；理财账户币种兜底。
+      currency: cashAcc.currency,
+      fallbackCurrency: wealthAcc.currency,
       productId: resolvedWealthProductId,
       name: resolvedProductNameInput,
       annualRate,
@@ -2276,7 +2279,7 @@ export async function editInvestment(formData: FormData) {
         : null;
       // Query the cash account info first (if needed).
       const cashAccountInfo = requestedCashAccountId
-        ? await tx.account.findUnique({ where: { id: requestedCashAccountId }, select: { id: true, name: true } })
+        ? await tx.account.findUnique({ where: { id: requestedCashAccountId }, select: { id: true, name: true, currency: true } })
         : null;
 
       // Query the new fund account info (if needed).
@@ -2333,7 +2336,8 @@ export async function editInvestment(formData: FormData) {
             householdId,
             institutionId: finalInvestmentAccountInfo?.institutionId,
             productType: fundProductType === "advisor" ? "advisor" : "wealth",
-            currency: finalInvestmentAccountInfo?.currency,
+            // 产品币种跟随买入账户（资金账户）；老记录没有现金账户时退回投资账户币种。
+            currency: cashAccountInfo?.currency ?? finalInvestmentAccountInfo?.currency,
             productId: wealthProductIdInput,
             name: fundName,
           })

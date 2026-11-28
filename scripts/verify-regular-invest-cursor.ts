@@ -11,6 +11,8 @@
  * - 用户把游标拨回「上次执行 + 一个周期」之前时，早于上次执行日期的墓碑允许重做；
  * - 游标没回拨 / 墓碑正好落在最近一期时，墓碑照旧拦补记（刚删掉的期次不能被造回来）。
  */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { resolveFundBatchExecuteCursor } from "../src/lib/server/regular-invest-plan";
 import { calcNextScheduledRunDate } from "../src/lib/scheduled-task-date";
 import { formatDateUtc } from "../src/lib/date-utils";
@@ -143,6 +145,28 @@ const cursor5 = resolveFundBatchExecuteCursor({
 });
 const run5 = enumerate(cursor5, today);
 assert("上次执行日当天的墓碑仍生效", run5.dates.length === 1 && run5.dates[0] === "2026-11-25", run5.dates.join(","));
+
+// ── 净值预加载范围守卫（2026-11-26）─────────────────────────────────────────
+// 用户报「点执行全部，卡了几分钟」。根因不是数据库：执行全部会对**每个**执行中的
+// 基金计划逐个调 /api/v1/fund/preload-nav，而那次生产环境的容器 DNS 单次 4s，
+// 59 个计划 = 4 分钟；其中绝大多数计划的「下个执行日」还在未来，根本不用预加载
+// （旧实现把起点「夹」到 today，于是照样回源一次今天的净值）。
+const clientSource = readFileSync(
+  join(process.cwd(), "src/app/(sidebar)/regular-invest/RegularInvestClient.tsx"),
+  "utf8",
+);
+const preloadCalls = clientSource.match(/\/api\/v1\/fund\/preload-nav/g)?.length ?? 0;
+assert("批量执行不再逐个计划预加载净值", preloadCalls === 1, `preload-nav 调用点 = ${preloadCalls} 处`);
+assert(
+  "预加载范围在「没有到期期次」时短路为 null",
+  clientSource.includes("function navPreloadRange(") && clientSource.includes("if (start > endDate) return null;"),
+  "缺少 navPreloadRange 的未来游标短路",
+);
+assert(
+  "预加载请求带超时（不让外网慢把执行拖住）",
+  clientSource.includes("signal: AbortSignal.timeout("),
+  "preload-nav 缺少 AbortSignal.timeout",
+);
 
 if (failures > 0) {
   console.error(`\n${failures} 项断言失败`);

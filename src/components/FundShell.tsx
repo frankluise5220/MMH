@@ -1597,7 +1597,12 @@ export function FundShell(props: Props) {
     dispatchFinanceDataChanged({ reason: "fund-nav-refilled" });
   }, [loadFundShellData]);
 
-  function openPositionEntryModal(position: any) {
+  /**
+   * 打开本页的「手工新增份额」窗口（买入页签，已经带好这只基金的代码 / 份额 / 费率）。
+   * 货基历史太久、用户不想逐年重算时，重算提示关掉后就落到这里。useCallback 是为了能安全地
+   * 传进行内操作的依赖里，不因为每次渲染换新函数而重算整张表。
+   */
+  const openPositionEntryModal = useCallback((position: any) => {
     const code = String(position?.fundCode ?? "").trim();
     if (!code) return;
     const nextDefaults = {
@@ -1610,7 +1615,7 @@ export function FundShell(props: Props) {
     positionEntryDefaultsRef.current = nextDefaults;
     setPositionEntryDefaults(nextDefaults);
     setPositionEntryOpenSignal((value) => value + 1);
-  }
+  }, [d.confirmDaysMap, d.feeRateMap]);
 
   const shellRefreshHandler = useCallback(async () => {
     if (refreshTimer.current) clearTimeout(refreshTimer.current);
@@ -2005,7 +2010,12 @@ export function FundShell(props: Props) {
             {/* 货基收益靠万份收益逐日结转，改过买入日期后前面那段补不上：行内给一个
                 「从购买以来」强制重算入口，只作用于这一只基金。 */}
             {isMoneyAccount && p.fundCode ? (
-              <RebuildMoneyIncomeButton accountId={accountId} fundCode={p.fundCode} fundName={p.name} />
+              <RebuildMoneyIncomeButton
+                accountId={accountId}
+                fundCode={p.fundCode}
+                fundName={p.name}
+                onManualAdd={() => openPositionEntryModal(p)}
+              />
             ) : null}
             {!isWealthAccount ? <button
               type="button"
@@ -2066,6 +2076,7 @@ export function FundShell(props: Props) {
     isMoneyAccount,
     isWealthAccount,
     openFundSettings,
+    openPositionEntryModal,
     positionAssetKey,
     switchFund,
     t,

@@ -245,6 +245,16 @@ async function accrueOneWallet(params: {
   const rebuildToKey = rebuildToRaw && rebuildToRaw > yesterdayKey ? yesterdayKey : rebuildToRaw;
   /** 本轮的计息上限：没选终点就是昨天。 */
   const accrualEndKey = rebuildToKey && rebuildToKey < yesterdayKey ? rebuildToKey : yesterdayKey;
+  /**
+   * 一次只重算一年（2026-11-26 用户裁定）：从某天重算时，本次真正重放的区间是
+   * `[rebuildFrom, from+365天]`，**删除区间也必须只覆盖这一段**。若照旧按用户选的
+   * 终点删掉整整七年、却只结一年，后面六年会在用户一次次点「继续重算」之前
+   * 凭空消失（明细里看不到任何收益行）。
+   */
+  const rebuildWindowEndKey = rebuildFromKey
+    && daysBetween(rebuildFromKey, accrualEndKey) + 1 > MAX_DAYS_PER_RUN
+    ? shiftYmd(rebuildFromKey, MAX_DAYS_PER_RUN - 1)
+    : accrualEndKey;
 
   // 重算按「钱包」删，不限基金代码：区间里可能有多个段的收益行都要重放。
   // 选了终点就只删这一段，区间之后的行保持原样（用户只要求重放这一段）。
@@ -261,7 +271,7 @@ async function accrueOneWallet(params: {
         source: TRANSACTION_SOURCE_MONEY_INCOME,
         date: {
           gte: new Date(`${rebuildFromKey}T00:00:00.000Z`),
-          ...(rebuildToKey ? { lte: new Date(`${rebuildToKey}T00:00:00.000Z`) } : {}),
+          lte: new Date(`${rebuildWindowEndKey}T00:00:00.000Z`),
         },
       },
     });
@@ -310,7 +320,7 @@ async function accrueOneWallet(params: {
       truncated = true;
       break;
     }
-    const segmentEndKey = segment.endKey && segment.endKey < accrualEndKey ? segment.endKey : accrualEndKey;
+    const segmentEndKey = segment.endKey && segment.endKey < rebuildWindowEndKey ? segment.endKey : rebuildWindowEndKey;
     let fromKey = segment.startKey;
     if (cursorKey && cursorKey > fromKey) fromKey = cursorKey;
     // 自动结转（后台任务 / 开机自检，既没带 fromDate 也没要求整段重来）只结「这段建立或
@@ -348,9 +358,11 @@ async function accrueOneWallet(params: {
       ...EMPTY,
       wallets: 1,
       fromDate: cursorKey ?? walletStartKey,
-      toDate: rebuildToKey,
+      // 窗口可能被「一次一年」裁短：告诉界面本次实际处理到哪天，用户再点一次接着算。
+      toDate: rebuildWindowEndKey,
       pendingFrom,
-      truncated,
+      // 窗口之外还有区间没处理（一次一年）也要算「还没算完」，否则界面会以为已经到终点。
+      truncated: truncated || Boolean(rebuildFromKey) && rebuildWindowEndKey < accrualEndKey,
       reason: pendingFrom ? "yield data unavailable" : "nothing to accrue",
     });
   }
@@ -499,6 +511,11 @@ async function accrueOneWallet(params: {
  * `rebuildFrom` / `rebuildTo`：重算区间 `[from, to]`（含两端）——先删掉这段收益行，
  * 再按当前余额与万份收益重放。`to` 默认昨天（当天收益还没公布），晚于昨天会被夹回昨天。
  * 改了历史流水、或万份收益数据修正之后用它把某一段重放（`rebuild` 是整段重来）。
+ *
+ * **一次只重算一年**（2026-11-26 用户裁定）：带 `rebuildFrom` 时本次只删/只放
+ * `[from, from+365天]`，返回的 `toDate` 是实际处理到的最后一天、`truncated` 表示还有
+ * 剩余的区间；界面据此弹窗提示「已重算到哪天，需要继续请再点一次」，下次把 `rebuildFrom`
+ * 换成 `toDate + 1` 即可续算。年数太多的老货基，建议用户直接按当前份额手工加一笔。
  */
 export async function accrueWalletMoneyFundIncome(params: {
   householdId: string;

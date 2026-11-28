@@ -49,6 +49,7 @@
     "check:fund-cost-basis": "tsx scripts/verify-fund-cost-basis.ts",
     "check:regular-invest-cursor": "tsx scripts/verify-regular-invest-cursor.ts",
     "check:reconcile-patch": "tsx scripts/verify-reconcile-inplace-patch.ts",
+    "check:wealth-product-currency": "tsx scripts/verify-wealth-product-currency.ts",
     "check:credit-cycle": "tsx scripts/verify-credit-cycle-boundaries.ts",
     "check:credit-installment": "tsx scripts/verify-credit-installment-statement-month.ts",
     "check:docker": "node scripts/verify-docker-entrypoint.cjs",

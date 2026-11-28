@@ -230,10 +230,17 @@ export async function POST(req: NextRequest) {
         where: { householdId, institutionId: effectiveInstitutionId, name, productType },
         include: { Institution: { select: { id: true, name: true, shortName: true } } },
       });
-      const targetCurrency = requestedCurrency ? normalizeCurrency(requestedCurrency) : normalizeCurrency(resolvedAccount.currency);
-      if (existing && normalizeCurrency(existing.currency) !== targetCurrency) {
-        throw new Error(`同名理财产品已存在，但币种是 ${normalizeCurrency(existing.currency)}，当前理财账户币种是 ${targetCurrency}`);
-      }
+      // 币种不是产品身份的一部分：同一只基金可能在美元、港币等不同账户下被记录，
+      // 主数据只保留首次创建时按当时账户币种自动落下的值，下单界面从未让用户选过它。
+      // 同机构 + 同家族 + 同名即同一产品，直接复用，不因币种差异拦记账。
+      // 新建时币种跟随买入账户（资金来源账户），投资账户币种兜底。
+      const fundingAccount = await tx.account.findFirst({
+        where: { id: cashAccountId, householdId },
+        select: { currency: true },
+      });
+      const targetCurrency = requestedCurrency
+        ? normalizeCurrency(requestedCurrency)
+        : normalizeCurrency(fundingAccount?.currency ?? resolvedAccount.currency);
       const resolvedProduct = existing ?? await tx.wealthProduct.create({
         data: {
           householdId,

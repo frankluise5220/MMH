@@ -21,7 +21,7 @@ import { Info, Loader2, Trash2, Wallet, X } from "lucide-react";
 import { ModalLayer } from "@/components/ModalLayer";
 import { accountOptionFromParts } from "@/lib/account-display";
 import { readAccountDisplaySettings } from "@/lib/client/account-display-settings";
-import { showChoiceDialog, showConfirmDialog } from "@/lib/client/confirm-dialog";
+import { showAlertDialog, showChoiceDialog, showConfirmDialog } from "@/lib/client/confirm-dialog";
 import { ALIPAY_BALANCE_BAO_FUNDS } from "@/lib/fund/money-fund-catalog";
 import { todayDateLocalYmd } from "@/lib/date-utils";
 import { useI18n } from "@/lib/i18n";
@@ -32,22 +32,28 @@ const FIELD_INPUT_CLS =
 const TH_CLS = "border-b border-slate-200 px-2 py-1.5 text-left text-[11px] font-semibold text-slate-600";
 const TD_CLS = "border-b border-slate-100 px-2 py-1 align-middle text-xs";
 /**
- * 手工重算一次最多往后接着跑几轮。
+ * 手工重算**点一次只跑一年**（2026-11-26 用户裁定）。
  *
- * 服务端单次重算最多结 366 天（`MAX_DAYS_PER_RUN`），超出部分只能下次再跑；用户既然选了
- * 整段区间，客户端就按这个粒度一路接着跑完（2026-11-26 用户报「选了 5 年只重算 80 天」）。
- * 轮数对用户不可见——窗口里始终是一次「正在重算」，20 轮 ≈ 20 年足够覆盖任何手工区间，
- * 真正的死循环由「是否还在往前推进」兜底。
+ * 重算要逐日拉万份收益，几年一起跑会把弹窗卡住很久；所以单次只结 366 天（与服务端
+ * `MAX_DAYS_PER_RUN` 同口径），算完弹窗告诉用户「已重算到哪天，需要继续请再点一次」，
+ * 用户再点一次就从那天接着往下算。客户端不再自己循环补完（老实现 20 轮静默跑几分钟）。
  */
-const RECALC_MAX_ROUNDS = 20;
+const RECALC_DAYS_PER_RUN = 366;
 
-/** 单次跨度超过一年就先提醒「会比较慢」（与服务端单轮上限同量级，只作提示阈值）。 */
-const RECALC_LARGE_RANGE_DAYS = 366;
+/** 还剩多少天以上就建议「直接按当前份额手工加」，别再逐年重算。 */
+const MANUAL_SHARES_HINT_DAYS = 365 * 3;
 
 /** YYYY-MM-DD + 1 天（只按日历日算，不碰时区）。 */
 function nextDayYmd(ymd: string): string {
   const date = new Date(`${ymd}T00:00:00.000Z`);
   date.setUTCDate(date.getUTCDate() + 1);
+  return date.toISOString().slice(0, 10);
+}
+
+/** YYYY-MM-DD 往后推 N 天（只按日历日算，不碰时区）。 */
+function addDaysYmd(ymd: string, days: number): string {
+  const date = new Date(`${ymd}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + days);
   return date.toISOString().slice(0, 10);
 }
 
@@ -237,6 +243,12 @@ export function MoneyFundIncomeDialog({ open, account, onClose, onChanged }: Pro
   const [recalcTo, setRecalcTo] = useState(() => todayDateLocalYmd());
   /** 用户改过区间后，段列表回来不许再覆盖他填的日期。 */
   const recalcTouchedRef = useRef(false);
+  /**
+   * 「续算」游标：上一次手工重算实际算到哪天，下一次从它的下一天接着跑。
+   * 空字符串 = 从区间起点重新算（改了日期、或上次已经算到终点）。
+   * 只活在这一次弹窗会话里：关掉弹窗再打开会从起点重来（区间没变时也是从头删/重放）。
+   */
+  const [resumeFrom, setResumeFrom] = useState("");
   const [segments, setSegments] = useState<LinkedFundSegment[]>([]);
   const [segmentsLoading, setSegmentsLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -368,6 +380,7 @@ export function MoneyFundIncomeDialog({ open, account, onClose, onChanged }: Pro
     const startDate = toYmd(account.linkedFundStartDate) || todayDateLocalYmd();
     setRecalcFrom(startDate);
     setRecalcTo(todayDateLocalYmd());
+    setResumeFrom("");
     recalcTouchedRef.current = false;
     setDrafts({});
     setNewDraft(EMPTY_DRAFT);
@@ -598,9 +611,14 @@ export function MoneyFundIncomeDialog({ open, account, onClose, onChanged }: Pro
       setError(t("settings.accounts.linkedFund.recalcRangeInvalid"));
       return;
     }
+    // 上一次点「重算」只跑了一年：这一次从它算到的下一天接着跑，而不是每次从头重放同一年。
+    const startDate = resumeFrom && resumeFrom > fromDate && resumeFrom <= toDate ? resumeFrom : fromDate;
+    // 本次窗口 = 从 startDate 起最多一年（与服务端 MAX_DAYS_PER_RUN 同口径），确认框按这一年说。
+    const windowDays = Math.min(daySpanInclusive(startDate, toDate), RECALC_DAYS_PER_RUN);
+    const windowToDate = addDaysYmd(startDate, Math.max(0, windowDays - 1));
     const confirmed = await showConfirmDialog({
       title: t("settings.accounts.linkedFund.recalcConfirmTitle"),
-      message: tf("settings.accounts.linkedFund.recalcConfirm", { from: fromDate, to: toDate }),
+      message: tf("settings.accounts.linkedFund.recalcConfirm", { from: startDate, to: windowToDate }),
       confirmLabel: t("settings.accounts.linkedFund.recalc"),
     });
     if (!confirmed) return;
@@ -608,69 +626,58 @@ export function MoneyFundIncomeDialog({ open, account, onClose, onChanged }: Pro
     setBusy(true);
     setMessage("");
     setError("");
-    setRecalcTick({ total: totalDays, covered: 0, days: 0, amount: 0 });
+    setResumeFrom(startDate === fromDate ? "" : resumeFrom);
+    setRecalcTick({
+      total: totalDays,
+      covered: Math.max(0, daySpanInclusive(fromDate, startDate) - 1),
+      days: 0,
+      amount: 0,
+    });
     try {
-      let cursor = fromDate;
-      let days = 0;
-      let amount = 0;
-      let coveredFrom = "";
-      let coveredTo = "";
-      let skippedTiny = 0;
-      let skippedNoBalance = 0;
-      let stalled = false;
-      for (let round = 0; round < RECALC_MAX_ROUNDS && cursor <= toDate; round += 1) {
-        const response = await fetch("/api/v1/fund/money-income/accrue", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ accountId: account.id, fromDate: cursor, toDate }),
-        });
-        const data = await response.json().catch(() => null) as {
-          ok?: boolean;
-          error?: string;
-          data?: {
-            wallet?: {
-              days?: number;
-              totalIncome?: number;
-              removed?: number;
-              fromDate?: string;
-              toDate?: string;
-              truncated?: boolean;
-              skippedTinyDays?: number;
-              skippedNoBalanceDays?: number;
-            };
+      const response = await fetch("/api/v1/fund/money-income/accrue", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accountId: account.id, fromDate: startDate, toDate }),
+      });
+      const data = await response.json().catch(() => null) as {
+        ok?: boolean;
+        error?: string;
+        data?: {
+          wallet?: {
+            days?: number;
+            totalIncome?: number;
+            removed?: number;
+            fromDate?: string;
+            toDate?: string;
+            truncated?: boolean;
+            skippedTinyDays?: number;
+            skippedNoBalanceDays?: number;
           };
-        } | null;
-        if (!response.ok || data?.ok !== true) {
-          setError(data?.error?.trim() || t("settings.accounts.linkedFund.recalcFailed"));
-          return;
-        }
-        const wallet = data.data?.wallet;
-        const batchFrom = wallet?.fromDate || cursor;
-        const batchTo = wallet?.toDate || cursor;
-        days += wallet?.days ?? 0;
-        amount = Math.round((amount + (wallet?.totalIncome ?? 0)) * 100) / 100;
-        skippedTiny += wallet?.skippedTinyDays ?? 0;
-        skippedNoBalance += wallet?.skippedNoBalanceDays ?? 0;
-        if (!coveredFrom) coveredFrom = batchFrom;
-        coveredTo = batchTo;
-        setRecalcTick({
-          total: totalDays,
-          covered: Math.min(totalDays, daySpanInclusive(fromDate, batchTo)),
-          days,
-          amount,
-        });
-        if (!wallet?.truncated) break;
-        // 服务端会停在万份收益取不到的缺口前一天：此时批次不再前进，别再重复请求。
-        const nextCursor = nextDayYmd(batchTo);
-        if (nextCursor <= cursor) {
-          stalled = true;
-          break;
-        }
-        cursor = nextCursor;
+        };
+      } | null;
+      if (!response.ok || data?.ok !== true) {
+        setError(data?.error?.trim() || t("settings.accounts.linkedFund.recalcFailed"));
+        return;
       }
+      const wallet = data.data?.wallet;
+      const batchFrom = wallet?.fromDate || startDate;
+      const batchTo = wallet?.toDate || startDate;
+      const days = wallet?.days ?? 0;
+      const amount = Math.round((wallet?.totalIncome ?? 0) * 100) / 100;
+      const skippedTiny = wallet?.skippedTinyDays ?? 0;
+      const skippedNoBalance = wallet?.skippedNoBalanceDays ?? 0;
+      setRecalcTick({
+        total: totalDays,
+        covered: Math.min(totalDays, daySpanInclusive(fromDate, batchTo)),
+        days,
+        amount,
+      });
+      // 还有剩下的区间（服务端单次只结一年 / 卡在取不到万份收益的缺口）：留游标让用户再点一次。
+      const moreToCompute = wallet?.truncated === true && batchTo < toDate;
+      setResumeFrom(moreToCompute ? nextDayYmd(batchTo) : "");
       const vars = {
-        from: coveredFrom || fromDate,
-        to: coveredTo || fromDate,
+        from: batchFrom,
+        to: batchTo,
         days,
         amount: amount.toFixed(2),
       };
@@ -680,13 +687,27 @@ export function MoneyFundIncomeDialog({ open, account, onClose, onChanged }: Pro
       ].filter(Boolean);
       setMessage(
         [
-          stalled
+          moreToCompute
             ? tf("settings.accounts.linkedFund.recalcPartial", vars)
             : tf("settings.accounts.linkedFund.recalcDone", vars),
           ...skippedNotes,
         ].join(" "),
       );
       onChanged("account:linked-fund-recalc");
+      if (moreToCompute) {
+        const remainingDays = daySpanInclusive(nextDayYmd(batchTo), toDate);
+        // 2026-11-26 用户要求：算完一年就弹窗说清楚「算到哪天、要继续请再点一次」；
+        // 剩余太久（几年以上）的货基，直接建议按当前份额手工加一笔，别再一段段重算。
+        await showAlertDialog({
+          title: t("settings.accounts.linkedFund.recalcContinueTitle"),
+          message: [
+            tf("settings.accounts.linkedFund.recalcContinue", { to: batchTo }),
+            remainingDays > MANUAL_SHARES_HINT_DAYS
+              ? tf("settings.accounts.linkedFund.recalcContinueOldHint", { years: Math.ceil(remainingDays / 365) })
+              : "",
+          ].filter(Boolean).join("\n"),
+        });
+      }
     } catch {
       setError(t("settings.accounts.linkedFund.recalcFailed"));
     } finally {
@@ -970,6 +991,8 @@ export function MoneyFundIncomeDialog({ open, account, onClose, onChanged }: Pro
                     max={todayYmd}
                     onChange={(event) => {
                       recalcTouchedRef.current = true;
+                      // 改了区间就丢掉续算游标：新起点要从头算，不能接着上一段的进度。
+                      setResumeFrom("");
                       setRecalcFrom(event.target.value);
                     }}
                     className={FIELD_INPUT_CLS}
@@ -984,6 +1007,7 @@ export function MoneyFundIncomeDialog({ open, account, onClose, onChanged }: Pro
                     max={todayYmd}
                     onChange={(event) => {
                       recalcTouchedRef.current = true;
+                      setResumeFrom("");
                       setRecalcTo(event.target.value);
                     }}
                     className={FIELD_INPUT_CLS}
@@ -999,7 +1023,7 @@ export function MoneyFundIncomeDialog({ open, account, onClose, onChanged }: Pro
                 </button>
               </div>
               <div className="text-[11px] text-slate-400">{t("settings.accounts.linkedFund.recalcHint")}</div>
-              {recalcRangeDays > RECALC_LARGE_RANGE_DAYS ? (
+              {recalcRangeDays > RECALC_DAYS_PER_RUN ? (
                 <div className="text-[11px] text-amber-600">
                   {tf("settings.accounts.linkedFund.recalcLargeRangeHint", {
                     days: recalcRangeDays,

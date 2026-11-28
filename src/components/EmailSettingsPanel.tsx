@@ -196,6 +196,28 @@ type MailAttachment = {
   passwordRequired?: boolean;
 };
 type MailDetail = { uid: number; subject: string; from: string; date: string; text: string; html: string; attachments?: MailAttachment[]; hash?: string; mailbox?: string };
+
+/**
+ * 这封邮件里「还没解密、且整封信没有别的可识别内容」的加密 PDF 附件。
+ *
+ * 解密之后紧跟着就是识别（unlockAttachment 成功会直接调 parseMail），所以界面上
+ * 只能有一个动作按钮：锁着的时候底部主按钮就是「解密并识别」。不要在附件卡片里
+ * 再放一个同名按钮——用户会以为上下两个都得点一遍。
+ * 判断口径与 parseMail 的拦截条件必须一致（附件文字 / 正文 HTML 表格任一存在就不算阻塞）。
+ */
+function lockedPdfAttachment(mail: MailDetail | null | undefined): MailAttachment | null {
+  const attachments = mail?.attachments ?? [];
+  const localPending = pendingPdfAttachment(mail);
+  if (!localPending) return null;
+  const hasAttachmentText = attachments.some((item) => item.text?.trim());
+  const hasHtmlTable = /<table[\s>]/i.test(mail?.html ?? "");
+  return hasAttachmentText || hasHtmlTable ? null : localPending;
+}
+
+/** 任意还没解密的 PDF 附件：决定底部主按钮写「解密并识别」还是「导入账单」。 */
+function pendingPdfAttachment(mail: MailDetail | null | undefined): MailAttachment | null {
+  return (mail?.attachments ?? []).find((item) => item.passwordRequired && !item.text) ?? null;
+}
 type MailListMeta = {
   total: number;
   scanned: number;
@@ -427,6 +449,8 @@ export function EmailSettingsPanel({
   const [attachmentPasswords, setAttachmentPasswords] = useState<Record<string, string>>({});
   const [attachmentErrors, setAttachmentErrors] = useState<Record<string, string>>({});
   const [unlockingAttachmentId, setUnlockingAttachmentId] = useState("");
+  /** 锁定附件只有一个动作按钮（底部主按钮），没填密码时把焦点送回输入框。 */
+  const pdfPasswordInputRef = useRef<HTMLInputElement | null>(null);
   const [importPreview, setImportPreview] = useState<ImportPreviewState | null>(null);
   const [bookAccounts, setBookAccounts] = useState<BookAccount[]>([]);
   const [bookInstitutions, setBookInstitutions] = useState<BookInstitution[]>([]);
@@ -1037,13 +1061,39 @@ export function EmailSettingsPanel({
     }
   }
 
+  /**
+   * 邮件详情区的唯一动作按钮：附件锁着就是「解密并识别」，否则就是「导入账单」。
+   *
+   * 解密成功后 unlockAttachment 会直接接着识别，所以不需要第二个按钮。密码没填时
+   * 不发起任何请求，只把错误挂到该附件上并聚焦输入框。
+   */
+  async function recognizeSelectedMail() {
+    if (!selectedMail) return;
+    const pending = pendingPdfAttachment(selectedMail);
+    if (!pending) {
+      await parseMail(selectedMail, true);
+      return;
+    }
+    const password = (attachmentPasswords[pending.id] ?? "").trim();
+    if (password) {
+      setError("");
+      await unlockAttachment(pending);
+      return;
+    }
+    // 没填密码：正文/别的附件里已经有可识别内容就先识别它，否则指出该输密码。
+    if (!lockedPdfAttachment(selectedMail)) {
+      await parseMail(selectedMail, true);
+      return;
+    }
+    setAttachmentErrors((prev) => ({ ...prev, [pending.id]: t("settings.email.pdfPasswordEmpty") }));
+    setError(t("settings.email.pdfPasswordEmpty"));
+    pdfPasswordInputRef.current?.focus();
+  }
+
   async function parseMail(mail = selectedMail, autoOpenPreview = false) {
     // 加密附件还没解密时不要拿邮件正文硬解析：正文里只有「附件已加密」的说明，
     // 解析出来只会是一条 amount=0 的垃圾记录，用户看不出真正原因。
-    const lockedAttachment = (mail?.attachments ?? []).find((item) => item.passwordRequired && !item.text);
-    const hasAttachmentText = (mail?.attachments ?? []).some((item) => item.text?.trim());
-    const hasHtmlTable = /<table[\s>]/i.test(mail?.html ?? "");
-    if (lockedAttachment && !hasAttachmentText && !hasHtmlTable) {
+    if (lockedPdfAttachment(mail)) {
       setError(t("settings.email.pdfPasswordRequired"));
       return;
     }
@@ -2623,37 +2673,27 @@ export function EmailSettingsPanel({
                             ) : attachment.passwordRequired ? (
                               <div className="mt-1 space-y-1">
                                 <div className="text-amber-700">{t("settings.email.pdfPasswordRequired")}</div>
-                                <div className="flex items-center gap-1.5">
-                                  <input
-                                    type="password"
-                                    autoComplete="off"
-                                    className="form-input min-w-0 flex-1 text-xs"
-                                    value={attachmentPasswords[attachment.id] ?? ""}
-                                    placeholder={t("settings.email.pdfPasswordPlaceholder")}
-                                    onChange={(event) => setAttachmentPasswords((prev) => ({ ...prev, [attachment.id]: event.target.value }))}
-                                    onKeyDown={(event) => {
-                                      if (event.key !== "Enter") return;
-                                      event.preventDefault();
-                                      void unlockAttachment(attachment);
-                                    }}
-                                  />
-                                  <button
-                                    type="button"
-                                    className="shrink-0 rounded border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60"
-                                    disabled={unlockingAttachmentId === attachment.id || parsing}
-                                    onClick={() => void unlockAttachment(attachment)}
-                                  >
-                                    {unlockingAttachmentId === attachment.id
-                                      ? t("settings.email.pdfUnlocking")
-                                      : parsing
-                                        ? t("settings.email.recognizing")
-                                        : t("settings.email.pdfUnlock")}
-                                  </button>
-                                </div>
+                                <input
+                                  type="password"
+                                  autoComplete="off"
+                                  className="form-input min-w-0 w-full text-xs"
+                                  ref={attachment.id === pendingPdfAttachment(selectedMail)?.id ? pdfPasswordInputRef : undefined}
+                                  value={attachmentPasswords[attachment.id] ?? ""}
+                                  placeholder={t("settings.email.pdfPasswordPlaceholder")}
+                                  onChange={(event) => setAttachmentPasswords((prev) => ({ ...prev, [attachment.id]: event.target.value }))}
+                                  onKeyDown={(event) => {
+                                    if (event.key !== "Enter") return;
+                                    event.preventDefault();
+                                    // 回车始终解密「这张附件」：正文另有 HTML 表格时底部按钮是
+                                    // 「导入账单」，那时没有按钮能触发这张附件的解密，只有这里。
+                                    void unlockAttachment(attachment);
+                                  }}
+                                />
                                 {attachmentErrors[attachment.id] ? (
                                   <div className="text-red-600">{attachmentErrors[attachment.id]}</div>
                                 ) : null}
                                 <div className="text-[11px] text-slate-500">{t("settings.email.pdfPasswordHint")}</div>
+                                <div className="text-[11px] text-slate-500">{t("settings.email.pdfPasswordThenUnlock")}</div>
                               </div>
                             ) : attachment.parseError ? (
                               <div className="mt-0.5 text-amber-700">{attachmentErrorText(attachment)}</div>
@@ -2688,8 +2728,18 @@ export function EmailSettingsPanel({
                           })
                         : t("settings.email.autoImportHint")}
                     </span>
-                    <button className="h-8 px-3 rounded-md bg-blue-600 text-white text-xs hover:bg-blue-700 disabled:opacity-50" onClick={() => parseMail(selectedMail, true)} disabled={parsing}>
-                      {parsing ? t("settings.email.recognizing") : t("settings.email.importBill")}
+                    <button
+                      className="h-8 px-3 rounded-md bg-blue-600 text-white text-xs hover:bg-blue-700 disabled:opacity-50"
+                      onClick={() => void recognizeSelectedMail()}
+                      disabled={parsing || Boolean(unlockingAttachmentId)}
+                    >
+                      {unlockingAttachmentId
+                        ? t("settings.email.pdfUnlocking")
+                        : parsing
+                          ? t("settings.email.recognizing")
+                          : pendingPdfAttachment(selectedMail)
+                            ? t("settings.email.pdfUnlock")
+                            : t("settings.email.importBill")}
                     </button>
                   </div>
                   {autoImportError ? (

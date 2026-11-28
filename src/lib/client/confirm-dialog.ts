@@ -34,13 +34,14 @@ function appendTextBlock(parent: HTMLElement, text: string) {
   }
 }
 
-export function showConfirmDialog({
+function openMessageDialog({
   title,
   message,
   confirmLabel = "确定",
   cancelLabel = "取消",
   tone = "default",
-}: ConfirmDialogOptions): Promise<boolean> {
+  showCancel,
+}: ConfirmDialogOptions & { showCancel: boolean }): Promise<boolean> {
   if (typeof document === "undefined") return Promise.resolve(false);
 
   return new Promise((resolve) => {
@@ -102,7 +103,8 @@ export function showConfirmDialog({
         : "inline-flex h-9 items-center justify-center rounded-lg bg-blue-600 px-4 text-sm font-medium text-white shadow-sm transition-colors hover:bg-blue-700";
     confirmButton.textContent = confirmLabel;
 
-    footer.append(cancelButton, confirmButton);
+    if (showCancel) footer.append(cancelButton);
+    footer.append(confirmButton);
     panel.append(body, footer);
     overlay.appendChild(panel);
 
@@ -118,7 +120,7 @@ export function showConfirmDialog({
     function onKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
         event.preventDefault();
-        close(false);
+        close(!showCancel);
       }
       if (event.key === "Enter") {
         event.preventDefault();
@@ -127,14 +129,31 @@ export function showConfirmDialog({
     }
 
     overlay.addEventListener("mousedown", (event) => {
-      if (event.target === overlay) close(false);
+      if (event.target === overlay) close(!showCancel);
     });
-    cancelButton.addEventListener("click", () => close(false));
+    if (showCancel) cancelButton.addEventListener("click", () => close(false));
     confirmButton.addEventListener("click", () => close(true));
     document.addEventListener("keydown", onKeyDown);
     document.body.appendChild(overlay);
     confirmButton.focus();
   });
+}
+
+export function showConfirmDialog(options: ConfirmDialogOptions): Promise<boolean> {
+  return openMessageDialog({ ...options, showCancel: true });
+}
+
+/** 只要一个「知道了」的信息弹窗：用在「已经重算到哪天，需要继续请再点一次」这类结果说明。 */
+export function showAlertDialog({
+  title,
+  message,
+  confirmLabel = "知道了",
+}: {
+  title: string;
+  message: string;
+  confirmLabel?: string;
+}): Promise<void> {
+  return openMessageDialog({ title, message, confirmLabel, showCancel: false }).then(() => undefined);
 }
 
 /**

@@ -196,10 +196,8 @@ export async function POST(req: NextRequest) {
         where: { householdId, institutionId: resolvedAccount.institutionId, name },
         include: { Institution: { select: { id: true, name: true, shortName: true } } },
       });
+      // 币种不是债券的身份：同名同机构即同一只债，直接复用主数据币种，不因账户币种差异拦记账。
       const targetCurrency = requestedCurrency ? normalizeCurrency(requestedCurrency) : normalizeCurrency(resolvedAccount.currency);
-      if (existing && normalizeCurrency(existing.currency) !== targetCurrency) {
-        throw new Error(`同名债券已存在，但币种是 ${normalizeCurrency(existing.currency)}，当前债券账户币种是 ${targetCurrency}`);
-      }
       const resolvedProduct = existing ?? await tx.bondProduct.create({
         data: {
           householdId,

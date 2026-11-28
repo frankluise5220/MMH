@@ -417,7 +417,9 @@ export function WealthFormModal({
           note: productDraft.note.trim() || undefined,
           cashAccountId: selectedCashAccount.id,
           wealthAccountId: selectedWealthAccount?.id ?? undefined,
-          currency: selectedWealthAccount?.currency ?? selectedCashAccount.currency ?? "CNY",
+          // 产品币种跟随买入账户（资金来源账户）：这是本次购买实际结算的币种，
+          // 用户从未在产品上选过币种，界面也不显示它。
+          currency: selectedCashAccount.currency ?? selectedWealthAccount?.currency ?? "CNY",
           productType: productDraft.productType,
           // 投顾窗口：产品与自动建的投顾账户落到所选机构（空 = 跟随资金账户机构）。
           institutionId: advisorMode ? productInstitutionChoice : undefined,

@@ -477,18 +477,24 @@ function todayInput(): string {
 }
 
 /**
- * 基金定投「执行」前的净值预加载起点。必须和服务端的补记起点同源：
+ * 基金定投「执行」前的净值预加载范围。必须和服务端的补记起点同源：
  * 从计划的「下个执行日」开始（用户把游标拨到过去，就补记那段历史），
- * 没有游标时才退回 lastRunDate / startDate。游标在未来时不预加载。
+ * 没有游标时才退回 lastRunDate / startDate。
+ *
+ * 起点落在 endDate 之后 = 这一轮没有任何到期期次，返回 null 不做预加载。
+ * 不能像以前那样把起点「夹」到 endDate：那会让未来游标的计划也去回源一次
+ * 「今天」的净值，而每次预加载都是一次外网请求（2026-11-26 生产实测：容器内
+ * DNS 单次 4s，59 个计划逐个预加载把「执行全部」拖成 4 分钟）。
  */
-function preloadStartDateFor(
+function navPreloadRange(
   plan: Pick<RegularInvestPlanView, "nextRunDate" | "lastRunDate" | "startDate">,
   endDate: string,
-): string {
+): { startDate: string; endDate: string } | null {
   const cursor = toDateInput(plan.nextRunDate);
   const fallback = (plan.lastRunDate ? toDateInput(plan.lastRunDate) : toDateInput(plan.startDate)) || endDate;
   const start = cursor || fallback;
-  return start <= endDate ? start : endDate;
+  if (start > endDate) return null;
+  return { startDate: start, endDate };
 }
 
 function formatScheduleRate(rate: number | null): string {
@@ -1226,18 +1232,21 @@ export function RegularInvestClient({
       messages: [],
     });
     try {
-      if (taskType === "fund_regular_invest" && plan?.fundCode) {
+      // 执行起点是计划的「下个执行日」（服务端按它补记），净值预加载必须跟着它走：
+      // 用户把下个执行日回拨到过去某天，预加载若仍从 lastRunDate 开始，
+      // 补记的期次会拿不到历史净值。没有到期期次时 navPreloadRange 返回 null，直接跳过。
+      const navRange = taskType === "fund_regular_invest" && plan?.fundCode
+        ? navPreloadRange(plan, todayInput())
+        : null;
+      if (navRange && plan.fundCode) {
         setExecutionProgress((prev) => prev ? { ...prev, currentLabel: t("regularInvest.client.execute.preloadingNav") } : prev);
-        const endDate = todayInput();
-        // 执行起点是计划的「下个执行日」（服务端按它补记），净值预加载必须跟着它走：
-        // 用户把下个执行日回拨到过去某天，预加载若仍从 lastRunDate 开始，
-        // 补记的期次会拿不到历史净值。
-        const startDate = preloadStartDateFor(plan, endDate);
         try {
           await fetch("/api/v1/fund/preload-nav", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ fundCode: plan.fundCode, startDate, endDate }),
+            body: JSON.stringify({ fundCode: plan.fundCode, ...navRange }),
+            // 预加载只是优化，不值得让执行等外网：超时就直接交给 batch-execute 自己回源。
+            signal: AbortSignal.timeout(15000),
           });
         } catch {
           // NAV preload is an optimization; execution API still returns the source of truth.
@@ -1309,21 +1318,10 @@ export function RegularInvestClient({
       messages: [],
     });
     try {
-      const endDate = todayInput();
-      for (const plan of activePlans) {
-        if (getPlanTaskType(plan) !== "fund_regular_invest" || !plan.fundCode) continue;
-        setExecutionProgress((prev) => prev ? { ...prev, currentLabel: t("regularInvest.client.executeAll.preloadNav", { name: getPlanDisplayName(plan) }) } : prev);
-        const preloadStart = preloadStartDateFor(plan, endDate);
-        try {
-          await fetch("/api/v1/fund/preload-nav", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ fundCode: plan.fundCode, startDate: preloadStart, endDate }),
-          });
-        } catch {
-        }
-      }
-
+      // 这里**不做**逐个计划的净值预加载：batch-execute 自己会按「确认日缺净值」回源补齐
+      // （见其 nav-coverage 段），逐计划预加载只是把同一批外网请求提前重做一遍。
+      // 生产实测（2026-11-26）：容器内单次外网请求约 4s，59 个计划串行预加载 = 4 分钟，
+      // 而其中绝大多数计划的「下个执行日」还在未来、根本没有到期期次。
       let ok = 0;
       let fail = 0;
       const messages: string[] = [];
