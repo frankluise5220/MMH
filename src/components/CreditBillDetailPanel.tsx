@@ -171,12 +171,10 @@ export function CreditBillDetailPanel({
       if (!detail?.accountId || detail.accountId !== accountId) return;
       const billMonth = detail.billMonth || "all";
       const seq = ++selectionFetchSeqRef.current;
-      // The all-month server path preserves the complete ledger and shared
-      // server rendering; month switches reuse the existing table shell.
-      if (billMonth === "all") {
-        if (canRefreshCurrentRoute()) router.replace(detail.href, { scroll: false });
-        return;
-      }
+      // 账单月切换（含「所有账单明细」的 all）统一走客户端取数换表格：
+      // URL 已由发起方用 replaceCurrentRouteUrl 记好，这里不再 router.replace ——
+      // 那是 RSC 导航，会把整页（汇总、侧栏、统计）重跑一遍。
+      // /api/v1/bill/details 本身支持 billMonth=all，返回的就是整份账单明细。
       const scope = { householdId, accountId, billMonth, accountIds: billAccountIds ?? [accountId] };
       const cached = creditBillDetailCache.read(scope);
       setIsSwitchLoading(!cached);
@@ -205,11 +203,11 @@ export function CreditBillDetailPanel({
           const nextEntries = data.entries;
           const storedPreference = readStoredDetailPreference(accountId);
           const nextPageSize = storedPreference?.pageSize ?? billPager.rows;
-          // Switching to a specific bill month should show that month's
-          // details, not the persisted "show all" preference. Only the page
-          // size preference carries over; detailAll resets to false so the
-          // user sees the selected period's transactions.
-          const nextDetailAll = false;
+          // 切到具体账单月：只看这一期，不吃「全部」偏好，只带走每页行数。
+          // 切到 all（所有账单明细）：沿用「全部」偏好，和以前走 RSC 时的口径一致。
+          const nextDetailAll = billMonth === "all"
+            ? (storedPreference?.detailAll ?? initialDetailAll)
+            : false;
           const nextTotalPages = Math.max(1, Math.ceil(nextEntries.length / nextPageSize));
           setLocalEntries(nextEntries);
           setClientSelectedBillMonth(billMonth === "all" ? "" : billMonth);
@@ -241,7 +239,7 @@ export function CreditBillDetailPanel({
       selectionFetchSeqRef.current += 1;
       window.removeEventListener(CREDIT_BILL_DETAIL_SELECTION_EVENT, handleSelection as EventListener);
     };
-  }, [householdId, accountId, billAccountIds, billPager.autoFit, billPager.rows, replaceBillPagination, router, t]);
+  }, [householdId, accountId, billAccountIds, billPager.autoFit, billPager.rows, initialDetailAll, replaceBillPagination, router, t]);
 
   useEffect(() => {
     const handleFinanceChange = (event: Event) => {

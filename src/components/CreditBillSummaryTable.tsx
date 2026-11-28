@@ -146,6 +146,11 @@ export function CreditBillSummaryTable({
   const [exportBusy, setExportBusy] = useState(false);
   const [recalcBusy, setRecalcBusy] = useState(false);
   const [recalcError, setRecalcError] = useState("");
+  // 「隐藏已还 / 隐藏空账单」是纯表格展示开关：本地先落状态，再单独重取汇总行，
+  // 不走 router.replace（那会重跑整个服务端页面，看起来就是整页刷新）。
+  const [hideZeroBillsLocal, setHideZeroBillsLocal] = useState(hideZeroBills);
+  const [hideSettledBillsLocal, setHideSettledBillsLocal] = useState(hideSettledBills);
+  const [displayFilterBusy, setDisplayFilterBusy] = useState<"zero" | "settled" | null>(null);
   const summaryRefreshSeqRef = useRef(0);
   const totalPages = Math.max(1, Math.ceil(localRows.length / pageSize));
   const [page, setPage] = useState(() => clampPage(initialPage, totalPages));
@@ -158,6 +163,14 @@ export function CreditBillSummaryTable({
   useEffect(() => {
     setLocalRows(rows);
   }, [rows]);
+
+  useEffect(() => {
+    setHideZeroBillsLocal(hideZeroBills);
+  }, [hideZeroBills]);
+
+  useEffect(() => {
+    setHideSettledBillsLocal(hideSettledBills);
+  }, [hideSettledBills]);
 
   useEffect(() => {
     setBillingDayRulesLocal(billingDayRules ?? []);
@@ -195,9 +208,11 @@ export function CreditBillSummaryTable({
     return () => window.removeEventListener("mmh:bill-override:changed", handleBillOverrideChanged as EventListener);
   }, [accountId]);
 
+  // 只跟随服务端页码重置；本地重取汇总行（表头显隐开关）不回到旧页码。
+  // 行数变少导致页码越界由下面的 safePage 兜底。
   useEffect(() => {
-    setPage(clampPage(initialPage, Math.max(1, Math.ceil(rows.length / pageSize))));
-  }, [initialPage, pageSize, rows.length]);
+    setPage(Math.max(1, Math.floor(initialPage) || 1));
+  }, [initialPage]);
 
   useEffect(() => {
     const handleFinanceChange = (event: Event) => {
@@ -221,8 +236,8 @@ export function CreditBillSummaryTable({
       const params = new URLSearchParams({
         accountId,
         billMonth: url.searchParams.get("billMonth") || "all",
-        hideZeroBills: hideZeroBills ? "1" : "0",
-        hideSettledBills: hideSettledBills ? "1" : "0",
+        hideZeroBills: hideZeroBillsLocal ? "1" : "0",
+        hideSettledBills: hideSettledBillsLocal ? "1" : "0",
       });
       const seq = ++summaryRefreshSeqRef.current;
       fetch(`/api/v1/bill/summary?${params.toString()}`, { cache: "no-store" })
@@ -255,7 +270,7 @@ export function CreditBillSummaryTable({
     };
     window.addEventListener(FINANCE_DATA_CHANGED_EVENT, handleBillOverrideChange as EventListener);
     return () => window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handleBillOverrideChange as EventListener);
-  }, [accountId, hideSettledBills, hideZeroBills, t]);
+  }, [accountId, hideSettledBillsLocal, hideZeroBillsLocal, t]);
 
   useEffect(() => {
     if (page === safePage) return;
@@ -371,24 +386,69 @@ export function CreditBillSummaryTable({
     }
   }
 
+  // 以地址栏现值打底，避免把明细面板的 pageSize/detailPage/表头筛选等参数洗掉。
   const buildHref = (mutate?: (q: URLSearchParams) => void) => {
-    const q = new URLSearchParams();
+    const q = new URLSearchParams(typeof window === "undefined" ? "" : window.location.search);
     q.set("view", "bill");
     if (accountId) q.set("accountId", accountId);
     q.set("billMonth", localSelectedBillMonth || "all");
     q.set("billPage", String(safePage));
-    if (hideZeroBills) q.set("hideZeroBills", "1");
-    if (hideSettledBills) q.set("hideSettledBills", "1");
+    if (hideZeroBillsLocal) q.set("hideZeroBills", "1");
+    else q.delete("hideZeroBills");
+    if (hideSettledBillsLocal) q.set("hideSettledBills", "1");
+    else q.delete("hideSettledBills");
     mutate?.(q);
     return `/?${q.toString()}`;
   };
 
-  function navigateWithQuery(mutator: (q: URLSearchParams) => void) {
+  // 表头「隐藏已还 / 隐藏空账单」只改账单汇总表：URL 用 history.replaceState 记录，
+  // 再单独重取 /api/v1/bill/summary 换掉表格行。不能用 router.replace —— 那是 RSC
+  // 导航，会把整个页面（明细面板、统计、侧栏）重跑一遍，看起来就是整页刷新。
+  async function toggleDisplayFilter(key: "zero" | "settled") {
+    if (displayFilterBusy) return;
+    const nextZero = key === "zero" ? !hideZeroBillsLocal : hideZeroBillsLocal;
+    const nextSettled = key === "settled" ? !hideSettledBillsLocal : hideSettledBillsLocal;
+    const previousHref = `${window.location.pathname}${window.location.search}${window.location.hash}`;
     const href = buildHref((q) => {
-      mutator(q);
       q.set("billPage", "1");
+      if (nextZero) q.set("hideZeroBills", "1");
+      else q.delete("hideZeroBills");
+      if (nextSettled) q.set("hideSettledBills", "1");
+      else q.delete("hideSettledBills");
     });
-    router.replace(href, { scroll: false });
+    if (key === "zero") setCreditBillHideZeroPreference(nextZero);
+    else setCreditBillHideSettledPreference(nextSettled);
+    setHideZeroBillsLocal(nextZero);
+    setHideSettledBillsLocal(nextSettled);
+    setPage(1);
+    replaceCurrentRouteUrl(href);
+    setDisplayFilterBusy(key);
+    const seq = ++summaryRefreshSeqRef.current;
+    const params = new URLSearchParams({
+      accountId,
+      billMonth: localSelectedBillMonth || "all",
+      hideZeroBills: nextZero ? "1" : "0",
+      hideSettledBills: nextSettled ? "1" : "0",
+    });
+    try {
+      const response = await fetch(`/api/v1/bill/summary?${params.toString()}`, { cache: "no-store" });
+      const payload = await response.json().catch(() => null) as {
+        ok?: boolean;
+        error?: string;
+        data?: { rows?: CreditBillSummaryRow[] };
+      } | null;
+      if (!response.ok || !payload?.ok) throw new Error(payload?.error ?? t("creditBill.readFailed"));
+      if (seq !== summaryRefreshSeqRef.current || !Array.isArray(payload.data?.rows)) return;
+      setLocalRows(payload.data.rows);
+    } catch (error) {
+      console.error("Reload credit bill summary failed:", error);
+      // 取数失败就退回上一次成功的开关状态与 URL，避免按钮和表格内容不一致。
+      setHideZeroBillsLocal(hideZeroBills);
+      setHideSettledBillsLocal(hideSettledBills);
+      replaceCurrentRouteUrl(previousHref);
+    } finally {
+      setDisplayFilterBusy(null);
+    }
   }
 
   function selectBillMonth(month: string) {
@@ -426,8 +486,8 @@ export function CreditBillSummaryTable({
       const params = new URLSearchParams({
         accountId,
         billMonth: url.searchParams.get("billMonth") || "all",
-        hideZeroBills: hideZeroBills ? "1" : "0",
-        hideSettledBills: hideSettledBills ? "1" : "0",
+        hideZeroBills: hideZeroBillsLocal ? "1" : "0",
+        hideSettledBills: hideSettledBillsLocal ? "1" : "0",
       });
       const seq = ++summaryRefreshSeqRef.current;
       const summaryResponse = await fetch(`/api/v1/bill/summary?${params.toString()}`, { cache: "no-store" });
@@ -731,15 +791,11 @@ export function CreditBillSummaryTable({
               <button
                 type="button"
                 onClick={() => {
-                  const next = !hideZeroBills;
-                  setCreditBillHideZeroPreference(next);
-                  navigateWithQuery((q) => {
-                    if (next) q.set("hideZeroBills", "1");
-                    else q.delete("hideZeroBills");
-                  });
+                  void toggleDisplayFilter("zero");
                 }}
-                className={`flex h-7 items-center rounded-md border px-2 text-xs ${
-                  hideZeroBills
+                disabled={displayFilterBusy !== null}
+                className={`flex h-7 items-center rounded-md border px-2 text-xs disabled:cursor-not-allowed disabled:opacity-60 ${
+                  hideZeroBillsLocal
                     ? "border-blue-300 bg-blue-50 text-blue-700"
                     : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
                 }`}
@@ -749,19 +805,16 @@ export function CreditBillSummaryTable({
               <button
                 type="button"
                 onClick={() => {
-                  const next = !hideSettledBills;
-                  setCreditBillHideSettledPreference(next);
-                  navigateWithQuery((q) => {
-                    if (next) q.set("hideSettledBills", "1");
-                    else q.delete("hideSettledBills");
-                  });
+                  void toggleDisplayFilter("settled");
                 }}
-                className={`flex h-7 items-center rounded-md border px-2 text-xs ${
-                  hideSettledBills
+                disabled={displayFilterBusy !== null}
+                className={`flex h-7 items-center gap-1 rounded-md border px-2 text-xs disabled:cursor-not-allowed disabled:opacity-60 ${
+                  hideSettledBillsLocal
                     ? "border-blue-300 bg-blue-50 text-blue-700"
                     : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
                 }`}
               >
+                {displayFilterBusy === "settled" ? <RefreshCw className="h-3 w-3 animate-spin" /> : null}
                 {t("creditBill.hideSettled")}
               </button>
             </div>
