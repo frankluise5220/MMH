@@ -12,7 +12,6 @@ import { AdvancedDataTable, type AdvancedDataTableColumn, type AdvancedDataTable
 import { EntityCreateForm } from "@/components/EntityCreateForm";
 import { CalcInput } from "@/components/CalcInput";
 import { ClearableNoteField } from "@/components/ClearableNoteField";
-import { FundConfirmDaysPanel } from "@/components/FundConfirmDaysModal";
 import { MultiSelectFilterDropdown } from "@/components/MultiSelectFilterDropdown";
 import { SmartSelect } from "@/components/SmartSelect";
 import {

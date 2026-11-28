@@ -18,7 +18,6 @@ import { SmartSelect } from "@/components/SmartSelect";
 import { CalcInput } from "@/components/CalcInput";
 import { ClearableNoteField } from "@/components/ClearableNoteField";
 import { EntityCreateForm } from "@/components/EntityCreateForm";
-import { FundConfirmDaysPanel } from "@/components/FundConfirmDaysModal";
 import { CreditCardBillingDayRulesTable } from "@/components/CreditCardBillingDayRulesTable";
 import { TransparentSideNavButtons } from "@/components/TransparentSideNavButtons";
 import { SettingsInfoHint, useHideSettingDescriptions } from "@/components/settings/SettingsPageScaffold";
@@ -41,6 +40,7 @@ import {
   isStockInvestmentAccount,
 } from "@/lib/account-institution-rules";
 import { institutionFullName } from "@/lib/institution-display";
+import { accountNumberTail } from "@/lib/account-display";
 import { buildAccountOwnerOptions } from "@/lib/account-owner-options";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { fetchSettingsAccountData, getCachedSettingsAccountData } from "@/lib/client/settingsCache";
@@ -719,7 +719,7 @@ export function AccountEditDialog({
             && candidate.creditBillMode !== "supplementary"
             && candidate.cardRole !== "supplementary"
             && candidate.institutionId === editForm.institutionId)
-          .map((candidate) => ({ id: candidate.id, label: candidate.name, subLabel: candidate.numberMasked || "" }));
+          .map((candidate) => ({ id: candidate.id, label: candidate.name, subLabel: accountNumberTail(candidate.numberMasked) }));
         const supportsLastFour = editKind === "bank_credit" || editKind === "bank_debit";
         const hasRecords = (editingAccount.recordCount ?? 0) > 0;
         const kindEdit = accountKindOptionsForEdit({
@@ -1255,19 +1255,6 @@ export function AccountEditDialog({
                   rows={3}
                 />
               </EditSection>
-
-              {isInvestmentKind && editInvestProductType === "fund" ? (
-                <EditSection title={t("fundRules.title")} className="mt-4">
-                  <div className="mb-2 text-[11px] text-slate-400">{t("fundConfirmDays.embeddedHint")}</div>
-                  <FundConfirmDaysPanel
-                    accountId={editingAccount.id}
-                    compact
-                    onSaved={() => {
-                      dispatchFinanceDataChanged({ reason: "fund-confirm-days:save", accountIds: [editingAccount.id] });
-                    }}
-                  />
-                </EditSection>
-              ) : null}
 
               </div>
               {/* 按钮行移出滚动区：移动端整屏弹窗里，保存按钮要贴底不动，

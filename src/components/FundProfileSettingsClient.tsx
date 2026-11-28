@@ -6,7 +6,7 @@ import Link from "next/link";
 
 import { FundConfirmDaysPanel, type ConfirmDayRow } from "@/components/FundConfirmDaysModal";
 import { FundFeeRatePanel, type FeeRateRecord } from "@/components/FundFeeRatePanel";
-import { FundScheduledTasksPanel, type RelatedScheduledTask } from "@/components/FundScheduledTasksPanel";
+import { FundScheduledTaskCreateButton, FundScheduledTasksPanel, type RelatedScheduledTask } from "@/components/FundScheduledTasksPanel";
 import { RegularInvestForm } from "@/components/RegularInvestForm";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
@@ -395,9 +395,12 @@ export function FundProfileSettingsClient({ account, profile, backHref, onClose,
             </>
           )}
           <div className={isMoneyFund ? "p-2.5" : "border-t border-slate-100 p-2.5 pt-2"}>
-            <div className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-slate-700">
-              <CalendarClock className="h-3.5 w-3.5 text-indigo-600" />
-              {t("fundSettings.scheduledTaskSection")}
+            <div className="mb-1.5 flex items-center justify-between gap-2">
+              <div className="flex min-w-0 items-center gap-1.5 text-xs font-semibold text-slate-700">
+                <CalendarClock className="h-3.5 w-3.5 shrink-0 text-indigo-600" />
+                <span className="truncate">{t("fundSettings.scheduledTaskSection")}</span>
+              </div>
+              <FundScheduledTaskCreateButton onCreate={() => setCreatePlanOpen(true)} />
             </div>
             <FundScheduledTasksPanel
               accountId={account.id}
@@ -405,7 +408,6 @@ export function FundProfileSettingsClient({ account, profile, backHref, onClose,
               preloadedPlans={preloadedPlans}
               reloadToken={scheduledReloadToken}
               onEdit={setEditPlan}
-              onCreate={() => setCreatePlanOpen(true)}
             />
           </div>
         </section>
