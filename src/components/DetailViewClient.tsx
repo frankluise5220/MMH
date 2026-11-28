@@ -56,7 +56,7 @@ import {
   readStoredDetailPreference,
 } from "@/lib/detail-pagination-preference";
 import { parseImportAccountId } from "@/lib/account-import-match";
-import { formatAccountTableLabel, formatAccountTableTitle } from "@/lib/account-display";
+import { accountNumberTail, formatAccountTableLabel, formatAccountTableTitle } from "@/lib/account-display";
 import { systemCategoryLabel } from "@/lib/system-category-labels";
 import { APP_PREFS_EVENT, getDateDisplayFormatPreference, getDetailDateBackgroundPreference, getTimeZonePreference, type DateDisplayFormat } from "@/lib/client/appPreferences";
 import { readAccountDisplaySettings } from "@/lib/client/account-display-settings";
@@ -1155,7 +1155,7 @@ export function DetailViewClient({
     const target = accountColumnTarget(entry);
     if (accountColumnMode === "cardLast4") {
       const option = target.id ? accountOptionById.get(target.id) : undefined;
-      const last4 = option?.numberMasked?.trim();
+      const last4 = accountNumberTail(option?.numberMasked);
       if (last4) {
         const title = option?.title ?? option?.fullLabel ?? option?.label ?? last4;
         return { id: target.id, label: last4, title };

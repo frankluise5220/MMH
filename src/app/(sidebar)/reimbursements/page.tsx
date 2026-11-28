@@ -112,14 +112,19 @@ export default async function ReimbursementsPage({
     unlinkTransaction: unlinkReimbursementTransaction,
   };
 
-  const cashAccountOptions = cashAccounts.map((account) => ({
-    id: account.id,
-    label: account.name,
-    institutionName: account.Institution?.shortName || account.Institution?.name || null,
-    numberMasked: account.numberMasked,
-    kind: account.kind,
-    currency: account.currency,
-  }));
+  const cashAccountOptions = cashAccounts.map((account) => {
+    const institutionName = account.Institution?.shortName || account.Institution?.name || null;
+    // 名称里已经写着机构就不再重复；卡号同样只取后四位（见 ReimbursementModal 的渲染）。
+    const nameMentionsInstitution = Boolean(institutionName) && account.name.includes(institutionName as string);
+    return {
+      id: account.id,
+      label: account.name,
+      institutionName: nameMentionsInstitution ? null : institutionName,
+      numberMasked: account.numberMasked,
+      kind: account.kind,
+      currency: account.currency,
+    };
+  });
 
   // Global view: no accountId → aggregate every reimbursable counterparty.
   if (!params.accountId) {

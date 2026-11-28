@@ -55,6 +55,21 @@ const ACCOUNT_LABEL_FIELD_KEYS = [
 
 export type AccountLabelField = (typeof ACCOUNT_LABEL_FIELD_KEYS)[number];
 
+/**
+ * 必显示字段（2026-11-28 用户裁定）：账户名不能从显示格式里移除。
+ *
+ * 没有名称的标签会退化成「招行·8333」这种认不出账户的串，所以设置页不提供移除，
+ * 归一化时也统一补回——旧偏好、手工调接口、Cookie 里缺了 name 的都会被纠正。
+ */
+export const REQUIRED_ACCOUNT_LABEL_FIELDS: readonly AccountLabelField[] = ["name"];
+
+/** 缺名称时插在这些字段之前，保持「机构 · 名称 · 尾号」的自然顺序。 */
+const ACCOUNT_LABEL_FIELDS_AFTER_NAME: readonly AccountLabelField[] = ["last4", "kind", "currency"];
+
+export function isRequiredAccountLabelField(field: AccountLabelField) {
+  return REQUIRED_ACCOUNT_LABEL_FIELDS.includes(field);
+}
+
 const ACCOUNT_LABEL_SEPARATOR = "·";
 /**
  * Legacy cookie value emitted before empty selections were migrated to the
@@ -120,6 +135,26 @@ export function normalizeAccountLabelFields(
     if (result.includes(key)) continue;
     result.push(key);
   }
+  // 空选择仍表示「未配置」（由调用方回退到默认格式），只在实际选了字段时补必显示项。
+  if (result.length > 0) {
+    for (const required of REQUIRED_ACCOUNT_LABEL_FIELDS) {
+      if (result.includes(required)) continue;
+      // 位置：跟在所有人/机构后面，再不行就插在尾号·类型·币种之前，
+      // 保证补回来的名称仍是「机构 · 名称 · 尾号」这一段的中间。
+      const prefixIndex = Math.max(
+        result.indexOf("owner"),
+        result.indexOf("institution"),
+        result.indexOf("institutionShort"),
+      );
+      const trailingIndex = result.findIndex((key) => ACCOUNT_LABEL_FIELDS_AFTER_NAME.includes(key));
+      const insertAt = prefixIndex >= 0
+        ? prefixIndex + 1
+        : trailingIndex >= 0
+          ? trailingIndex
+          : result.length;
+      result.splice(insertAt, 0, required);
+    }
+  }
   return result;
 }
 
@@ -165,6 +200,21 @@ type AccountLabelRenderInput = {
 };
 
 /**
+ * 账户名称/标签里显示的那截卡号：**只取后四位**。
+ *
+ * 库里 `numberMasked` 可能是完整卡号（例如 6225269706372445），也可能是用户直接
+ * 填的后四位（3833）。前者写进列表既难读也泄露卡号，所以统一在这里裁成后四位；
+ * 已经只有四位（或更短）的原样返回，去掉空格、`****` 之类的分隔符。
+ */
+export function accountNumberTail(numberMasked: string | null | undefined): string {
+  const raw = (numberMasked ?? "").trim();
+  if (!raw) return "";
+  const digits = raw.replace(/\D+/g, "");
+  const source = digits.length >= 4 ? digits : raw;
+  return source.length > 4 ? source.slice(-4) : source;
+}
+
+/**
  * 标签里该显示的币种文本（本位币、以及名称里已写过的币种都返回空串）。
  * 抽出来是因为 `buildAccountDisplayOption` 的 hover 补全也要用同一份判断。
  */
@@ -189,8 +239,9 @@ export function renderAccountLabel(input: AccountLabelRenderInput) {
   const institutionShort = input.institution?.shortName?.trim() ?? "";
   const institutionFull = input.institution?.name?.trim() ?? "";
   const ownerName = input.ownerName?.trim() ?? "";
-  const last4Raw = (input.numberMasked ?? "").trim();
-  const last4 = last4Raw && accountName.includes(last4Raw) ? "" : last4Raw;
+  const last4Tail = accountNumberTail(input.numberMasked);
+  // 判重只看后四位：库里存完整卡号时，名称里的「2445」也要能压掉它。
+  const last4 = last4Tail && accountName.includes(last4Tail) ? "" : last4Tail;
   const institutionSuppressed = accountNameContainsInstitution(accountName, input.institution);
   // 币种：本位币不显示；名称里已经写了币种（子户默认名「原名 · USD」）也不再重复，
   // 否则会渲染成「… · USD · USD」。
@@ -225,7 +276,7 @@ export function renderAccountLabel(input: AccountLabelRenderInput) {
   }
 
   if (parts.length > 0) return parts.join(ACCOUNT_LABEL_SEPARATOR);
-  return accountName || institutionShort || institutionFull || last4Raw || ownerName;
+  return accountName || institutionShort || institutionFull || last4Tail || ownerName;
 }
 
 export const DEFAULT_CREDIT_CARD_LABEL_TEMPLATE = "{机构简称}·{信用卡后4位}";
@@ -455,7 +506,7 @@ function formatAccountSelectorCoreLabel(input: {
   numberMasked?: string | null;
 }) {
   const accountName = input.accountName.trim();
-  const last4 = (input.numberMasked ?? "").trim();
+  const last4 = accountNumberTail(input.numberMasked);
   const parts = [accountName];
   if (last4 && !accountName.includes(last4)) parts.push(last4);
   return parts.filter(Boolean).join("·").trim() || accountName;

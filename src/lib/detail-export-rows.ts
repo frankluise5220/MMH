@@ -9,7 +9,7 @@
  * 纯函数、不碰 prisma：RSC 与 API 路由都可以直接调用。导出需要的视图口径
  * （资金侧账户、金额符号、生效日、账户标签）由调用方以回调注入。
  */
-import { counterpartyQualifiedAccountName } from "@/lib/account-display";
+import { accountNumberTail, counterpartyQualifiedAccountName } from "@/lib/account-display";
 import { kindLabel } from "@/lib/account-kinds";
 import { getInsuranceDetailCategoryName, getInsuranceDetailNote } from "@/lib/insurance/detail-display";
 import { getInvestmentCategoryName } from "@/lib/investment-category";
@@ -121,7 +121,8 @@ export function exportAccountLabel(account: ExportAccountLike, fallbackName?: st
   const accountName = account?.name?.trim() || fallbackName?.trim() || "";
   const isSettlementOrLoan = account?.kind === "loan" || account?.kind === "settlement";
   const qualifiedName = isSettlementOrLoan ? counterpartyQualifiedAccountName(accountName, account?.Counterparty) : accountName;
-  const tailOrName = account?.numberMasked?.trim() || qualifiedName;
+  // 卡号一律只写后四位：库里可能存着完整卡号，导出里不该出现整串数字。
+  const tailOrName = accountNumberTail(account?.numberMasked) || qualifiedName;
   const accountType = account?.kind ? kindLabel(account.kind) : "";
   return [owner, institution, tailOrName, accountType].filter(Boolean).join("·");
 }

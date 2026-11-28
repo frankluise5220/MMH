@@ -4,7 +4,7 @@ import { cookies } from "next/headers";
 import Link from "next/link";
 
 import { LiabilitiesGuideClient } from "@/components/LiabilitiesGuideClient";
-import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate, accountRenderSettings } from "@/lib/account-display";
+import { accountNumberTail, buildAccountDisplayOption, normalizeCreditCardLabelTemplate, accountRenderSettings } from "@/lib/account-display";
 import { buildAccountOwnerOptions } from "@/lib/account-owner-options";
 import { LENDER_INSTITUTION_TYPE_VALUES, institutionTypeLabel, isInstitutionTypeOf, isSettlementCounterpartyType } from "@/lib/account-kinds";
 import { institutionFullName } from "@/lib/institution-display";
@@ -502,7 +502,13 @@ export default async function LiabilitiesPage({
                             </span>
                             <span>{t("liabilities.billingDayLabel", { day: billingDayDisplayValue(row.billingDay, t) })}</span>
                             <span>{row.repaymentOffsetDays != null ? t("settings.accounts.repaymentOffsetDays", { days: row.repaymentOffsetDays }) : t("liabilities.repaymentDayLabel", { day: dayLabel(row.repaymentDay, t) })}</span>
-                            {row.numberMasked ? <span>{t("liabilities.lastFour", { value: row.numberMasked })}</span> : null}
+                            {(() => {
+                              // 卡号一律只写后四位；账户标签里已经写着这一截就不再重复。
+                              const tail = accountNumberTail(row.numberMasked);
+                              return tail && !row.name.includes(tail)
+                                ? <span>{t("liabilities.lastFour", { value: tail })}</span>
+                                : null;
+                            })()}
                           </div>
                         </div>
                         <div className="shrink-0 text-right">

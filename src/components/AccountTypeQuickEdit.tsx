@@ -30,6 +30,7 @@ import {
   isStockInvestmentAccount,
 } from "@/lib/account-institution-rules";
 import { FIXED_ASSET_TYPES, isFixedAssetAccountLike } from "@/lib/fixed-asset";
+import { accountNumberTail } from "@/lib/account-display";
 import { EQUAL_PAYMENT_REPAYMENT_METHOD,
   EQUAL_PRINCIPAL_REPAYMENT_METHOD,
   INSTALLMENT_REPAYMENT_METHOD,
@@ -253,11 +254,15 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
         .map((item) => ({ id: item.id, name: item.name })));
       setCreditAccounts(cachedAccounts
         .filter((item) => item.kind === "bank_credit" && item.id !== account.id && item.creditBillMode !== "supplementary" && item.cardRole !== "supplementary")
-        .map((item) => ({
-          id: item.id,
-          name: item.numberMasked ? `${item.name} · ${item.numberMasked}` : item.name,
-          institutionId: item.institutionId ?? null,
-        })));
+        .map((item) => {
+          // 卡号只显示后四位；名称里已经写着就不再重复。
+          const tail = accountNumberTail(item.numberMasked);
+          return {
+            id: item.id,
+            name: tail && !item.name.includes(tail) ? `${item.name} · ${tail}` : item.name,
+            institutionId: item.institutionId ?? null,
+          };
+        }));
     }
   }, [account.id, loanDetails, resetForm]);
 

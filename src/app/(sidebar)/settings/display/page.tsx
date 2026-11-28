@@ -9,6 +9,7 @@ import SettingsSwitch from "@/components/settings/SettingsSwitch";
 
 import {
   DEFAULT_ACCOUNT_LABEL_FIELDS,
+  isRequiredAccountLabelField,
   normalizeAccountLabelFields,
   renderAccountLabel,
   type AccountLabelField,
@@ -517,6 +518,8 @@ export default function DisplaySettingsPage() {
   }
 
   function toggleAccountLabelField(field: AccountLabelField) {
+    // 账户名称是必显示字段：点它不能把字段摘掉（归一化也会补回来）。
+    if (isRequiredAccountLabelField(field)) return;
     const next = accountLabelFields.includes(field)
       ? accountLabelFields.filter((item) => item !== field)
       : [...accountLabelFields, field];
@@ -1052,16 +1055,20 @@ export default function DisplaySettingsPage() {
               {accountLabelFields.map((field) => {
                 const option = ACCOUNT_LABEL_FIELD_OPTIONS.find((item) => item.value === field);
                 if (!option) return null;
+                const required = isRequiredAccountLabelField(field);
                 return (
                   <button
                     key={field}
                     type="button"
                     onClick={() => toggleAccountLabelField(field)}
-                    aria-label={t("settings.display.accountFormatRemove")}
+                    disabled={required}
+                    aria-label={required ? t("settings.display.accountFormatRequired") : t("settings.display.accountFormatRemove")}
                     className="inline-flex h-9 items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-2.5 text-xs font-medium text-blue-700 active:bg-blue-100"
                   >
                     {t(option.labelKey)}
-                    <X className="h-3.5 w-3.5 text-blue-400" aria-hidden="true" />
+                    {required
+                      ? <span className="text-[10px] font-normal text-blue-400">{t("settings.display.accountFormatRequired")}</span>
+                      : <X className="h-3.5 w-3.5 text-blue-400" aria-hidden="true" />}
                   </button>
                 );
               })}
@@ -1465,6 +1472,7 @@ export default function DisplaySettingsPage() {
                     accountLabelFields.map((field, index) => {
                       const option = ACCOUNT_LABEL_FIELD_OPTIONS.find((item) => item.value === field);
                       if (!option) return null;
+                      const required = isRequiredAccountLabelField(field);
                       const isDragging = draggingAccountLabelField === field;
                       const isDropTarget = dragOverAccountLabelField === field && !isDragging;
                       return (
@@ -1504,15 +1512,21 @@ export default function DisplaySettingsPage() {
                           <GripVertical className="h-3.5 w-3.5 shrink-0 text-blue-300" aria-hidden="true" />
                           <span className="shrink-0 tabular-nums text-blue-400">{index + 1}.</span>
                           <span className="whitespace-nowrap font-medium">{t(option.labelKey)}</span>
-                          <button
-                            type="button"
-                            onClick={() => toggleAccountLabelField(field)}
-                            title={t("settings.display.accountFormatRemove")}
-                            aria-label={t("settings.display.accountFormatRemove")}
-                            className="ml-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded text-blue-400 hover:bg-blue-100 hover:text-blue-700"
-                          >
-                            <X className="h-3.5 w-3.5" />
-                          </button>
+                          {required ? (
+                            <span className="ml-0.5 shrink-0 text-[10px] font-normal text-blue-400">
+                              {t("settings.display.accountFormatRequired")}
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => toggleAccountLabelField(field)}
+                              title={t("settings.display.accountFormatRemove")}
+                              aria-label={t("settings.display.accountFormatRemove")}
+                              className="ml-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded text-blue-400 hover:bg-blue-100 hover:text-blue-700"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          )}
                         </div>
                       );
                     })

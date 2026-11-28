@@ -12,7 +12,7 @@ import { DateStepper } from "./DateStepper";
 import { AdvancedDataTable, ROW_ACTION_BUTTON_BOX_CLASS, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
 import { reimbursementErrorMessage } from "@/lib/reimbursement-error";
 import { filterReimbursementCandidates } from "@/lib/reimbursement-candidates";
-import { buildAccountDisplayOption } from "@/lib/account-display";
+import { accountNumberTail, buildAccountDisplayOption } from "@/lib/account-display";
 import { useAccountDisplaySettings } from "@/lib/client/account-display-settings";
 import { ReimbursementDocumentModal } from "@/components/ReimbursementDocumentModal";
 import type { ReimbursementFormEntry, ReimbursementObjectOption } from "@/components/ReimbursementFormModal";
@@ -1312,11 +1312,15 @@ export function ReimbursementWorkspace({
                   onChange={(event) => setReimburseCashAccountId(event.target.value)}
                   className="form-input h-9 w-full"
                 >
-                  {cashAccountOptions.map((option) => (
-                    <option key={option.id} value={option.id}>
-                      {[option.label, option.institutionName, option.numberMasked, option.kind ? t(`account.kind.${option.kind}`) : null, option.currency].filter(Boolean).join(" · ")}
-                    </option>
-                  ))}
+                  {cashAccountOptions.map((option) => {
+                    // 卡号只显示后四位；标签里已经写着的（账户显示格式含尾号）不重复。
+                    const tail = accountNumberTail(option.numberMasked);
+                    return (
+                      <option key={option.id} value={option.id}>
+                        {[option.label, option.institutionName, tail && !option.label.includes(tail) ? tail : null, option.kind ? t(`account.kind.${option.kind}`) : null, option.currency].filter(Boolean).join(" · ")}
+                      </option>
+                    );
+                  })}
                 </select>
               </div>
               <div>
