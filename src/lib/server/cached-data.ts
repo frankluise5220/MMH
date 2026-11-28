@@ -178,6 +178,11 @@ async function _loadEntriesPageForAccount(
    * `DETAIL_PAGED_FIRST_FETCH_ROWS`。
    */
   fetchRowsValue?: number,
+  /**
+   * 表头徽标的分母口径：与首屏同一趟查询一起数出来（见 `queryDetailPage`
+   * 的 `unfilteredCountFilters`）。不传就完全不产生额外开销。
+   */
+  unfilteredCountFilters?: DetailFilters | null,
 ) {
   const hidFilter = JSON.parse(hidFilterStr) as { householdId: string; filters?: DetailFilters | null };
   const hid = { householdId: hidFilter.householdId };
@@ -195,6 +200,7 @@ async function _loadEntriesPageForAccount(
     includeRunningBalances: !!sortAccountId,
     filters: hidFilter.filters ?? null,
     dateRange: rangeStr ? parseDetailDateRange(rangeStr) : null,
+    unfilteredCountFilters,
   });
   const pageRows = pageData.pageIds.length > 0
     ? await prisma.txRecord.findMany({
@@ -232,6 +238,7 @@ async function _loadEntriesPageForAccount(
       .filter((entry): entry is (typeof pageRows)[number] => !!entry),
     runningBalanceById: pageData.runningBalanceById,
     totalCount: pageData.totalCount,
+    unfilteredTotalCount: pageData.unfilteredTotalCount,
     page: pageData.page,
   };
 }

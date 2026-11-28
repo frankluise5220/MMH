@@ -18,6 +18,7 @@ import { loadFundStatisticSourceEntries, loadWealthStatisticSourceEntries } from
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { isStockCashInAction, isStockCashOutAction, stockCashAmount, totalStockFee } from "@/lib/stock/cashFlow";
 import { getInvestmentStatisticItems, type InvestmentStatisticEntryLike } from "@/lib/transaction-statistics";
+import { readInvestmentReportCache, writeInvestmentReportCache } from "@/lib/server/investment-report-cache";
 
 export type InvestmentProfitPeriod = "day" | "month" | "year";
 type InvestmentProfitKind = "fund" | "money" | "stock" | "wealth" | "deposit" | "fixedAsset";
@@ -1570,6 +1571,49 @@ async function findFirstDataYearFromDb(params: {
 }
 
 export async function loadInvestmentProfitReport(
+  ctx: HouseholdContext,
+  params: {
+    period: InvestmentProfitPeriod;
+    year: number;
+    month: number;
+    /** Year-period only: start the yearly buckets from this year ("从哪一年起"). */
+    startYear?: number | null;
+    /** Also resolve the household's first investment year for day/month periods (used by the date picker). */
+    includeFirstDataYear?: boolean;
+    accountIds?: string[] | null;
+    tagIds?: string[] | null;
+    fundValuationMode?: FundValuationMode;
+  },
+  language: DisplayLanguage = "zh-CN",
+) {
+  const key = investmentReportCacheKey(ctx, params, language);
+  const cached = readInvestmentReportCache<Awaited<ReturnType<typeof buildInvestmentProfitReport>>>(key);
+  if (cached) return cached;
+  const promise = buildInvestmentProfitReport(ctx, params, language);
+  writeInvestmentReportCache(key, promise);
+  return promise;
+}
+
+function investmentReportCacheKey(
+  ctx: HouseholdContext,
+  params: Parameters<typeof loadInvestmentProfitReport>[1],
+  language: DisplayLanguage,
+) {
+  return JSON.stringify([
+    ctx.hidFilter,
+    params.period,
+    params.year,
+    params.month,
+    params.startYear ?? null,
+    params.includeFirstDataYear ?? false,
+    params.accountIds?.length ? [...params.accountIds].sort() : null,
+    params.tagIds?.length ? [...params.tagIds].sort() : null,
+    params.fundValuationMode ?? null,
+    language,
+  ]);
+}
+
+async function buildInvestmentProfitReport(
   ctx: HouseholdContext,
   params: {
     period: InvestmentProfitPeriod;

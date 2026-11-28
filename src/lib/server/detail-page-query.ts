@@ -43,6 +43,14 @@ type DetailPageQueryArgs = {
   dateRange?: DetailDateRange | null;
   /** 服务端单列排序；仅多账户（无逐笔余额）视图生效。 */
   sort?: DetailSortState | null;
+  /**
+   * 表头徽标的分母（「当前视图 + 时间范围，不含表头筛选」的总条数）。
+   *
+   * 传 `undefined` = 不需要；传对象（可为空对象）= 在本页查询里顺带数出来。
+   * 以前这里是在页面层再整份调用一次取页函数（完整 CTE + 排序 + 取 1 行），
+   * 等于把同一份全量账本算两遍，筛选态首屏因此多花 0.7–1s。
+   */
+  unfilteredCountFilters?: DetailFilters | null;
 };
 
 type DetailPageQueryResult = {
@@ -50,6 +58,8 @@ type DetailPageQueryResult = {
   page: number;
   pageIds: string[];
   runningBalanceById: Record<string, number>;
+  /** 仅在传了 `unfilteredCountFilters` 时有值。 */
+  unfilteredTotalCount?: number;
 };
 
 function normalizedAccountIds(accountIds: string[]) {
@@ -202,6 +212,12 @@ function buildOrderingCtesSql(args: {
    * 注入同一层 `visible`，计数 / 分页 / 漏斗计数一次口径。
    */
   dateRange?: DetailDateRange | null;
+  /**
+   * 表头徽标分母的筛选口径（只带「默认隐藏」这类隐式条件，不带表头筛选）。
+   * 非 `undefined` 时追加一个 `visible_unfiltered` 可见集合，供页面 SQL 用标量
+   * 子查询顺带数出来 —— 不再为分母单独跑一次取页函数。
+   */
+  unfilteredCountFilters?: DetailFilters | null;
 }) {
   const {
     accountIds,
@@ -212,6 +228,7 @@ function buildOrderingCtesSql(args: {
     depositAccountMode = false,
     filters,
     dateRange,
+    unfilteredCountFilters,
   } = args;
   const sortAccountIdValue = sortAccountId ?? null;
   // 账户余额口径（account-balance.ts 的 isOnOrBeforeToday）以「今天」为截止，
@@ -638,6 +655,17 @@ function buildOrderingCtesSql(args: {
       FROM "ledger_ranked" c
       ${hasDisplayPredicate ? Prisma.sql`WHERE 1=1 ${filterSql} ${dateRangeSql}` : Prisma.empty}
     )
+    ${unfilteredCountFilters === undefined
+    ? Prisma.empty
+    : Prisma.sql`, "visible_unfiltered" AS (
+      -- 表头徽标的分母：与 visible 同一份 ledger_visible（同一趟扫描），
+      -- 只差表头筛选谓词。未被外部引用时数据库不会执行它。
+      SELECT c.*
+      FROM "ledger_visible" c
+      WHERE 1=1
+      ${buildDetailFilterSql(unfilteredCountFilters)}
+      ${dateRangeSql}
+    )`}
   `;
 }
 
@@ -710,7 +738,13 @@ export async function queryDetailPage(args: DetailPageQueryArgs): Promise<Detail
     depositAccountMode,
     filters: args.filters,
     dateRange: args.dateRange,
+    unfilteredCountFilters: args.unfilteredCountFilters,
   });
+  // 徽标分母随这一页一起回来（同一份 `ledger_visible`，只多一个标量子查询）；
+  // 没要求时是空片段，SQL 与原来逐字相同。
+  const unfilteredCountColumn = args.unfilteredCountFilters === undefined
+    ? Prisma.empty
+    : Prisma.sql`, (SELECT COUNT(*) FROM "visible_unfiltered") AS "unfilteredCount"`;
 
   if (!args.includeRunningBalances || !args.sortAccountId) {
     // 不需要逐笔余额（「全部收支」等）时不必给全部行编号：直接按同一套排序键
@@ -725,13 +759,13 @@ export async function queryDetailPage(args: DetailPageQueryArgs): Promise<Detail
     // 页码越界（前端带着过期页码）时窗口取不到行，再回退一次计数并夹到最后一页。
     const buildPageSql = (pageOffset: number) => Prisma.sql`
       ${orderingCtes}
-      SELECT o."id" AS "id", COUNT(*) OVER () AS "totalCount"
+      SELECT o."id" AS "id", COUNT(*) OVER () AS "totalCount"${unfilteredCountColumn}
       FROM "ordered" o
       ORDER BY ${orderBySql}
       LIMIT ${fetchRows} OFFSET ${pageOffset}
     `;
     const requestedOffset = (requestedPage - 1) * pageSize;
-    let rows = await prisma.$queryRaw<Array<{ id: string; totalCount: unknown }>>(buildPageSql(requestedOffset));
+    let rows = await prisma.$queryRaw<Array<{ id: string; totalCount: unknown; unfilteredCount?: unknown }>>(buildPageSql(requestedOffset));
     let totalCount = rows.length > 0 ? Number(rows[0].totalCount ?? 0) : 0;
     let page = Math.min(requestedPage, Math.max(1, Math.ceil(totalCount / pageSize)));
     if (rows.length === 0) {
@@ -746,7 +780,7 @@ export async function queryDetailPage(args: DetailPageQueryArgs): Promise<Detail
       page = Math.min(requestedPage, Math.max(1, Math.ceil(totalCount / pageSize)));
       const retryOffset = (page - 1) * pageSize;
       if (retryOffset !== requestedOffset) {
-        rows = await prisma.$queryRaw<Array<{ id: string; totalCount: unknown }>>(buildPageSql(retryOffset));
+        rows = await prisma.$queryRaw<Array<{ id: string; totalCount: unknown; unfilteredCount?: unknown }>>(buildPageSql(retryOffset));
       }
     }
     return {
@@ -754,6 +788,22 @@ export async function queryDetailPage(args: DetailPageQueryArgs): Promise<Detail
       page,
       pageIds: rows.map((row) => String(row.id)),
       runningBalanceById: {},
+      ...(args.unfilteredCountFilters === undefined
+        ? {}
+        : {
+            // 筛选结果为空（窗口取不到行）时标量子查询没有行可回，退回纯计数一次：
+            // 这正是「筛选后 0 条」的场景，分母仍然必须给出未筛选总数。
+            unfilteredTotalCount: rows.length > 0
+              ? Math.max(0, Math.floor(Number(rows[0].unfilteredCount) || 0))
+              : await countEntries(
+                  accountIds,
+                  args.householdId,
+                  await getHouseholdTimeZone(args.householdId),
+                  args.sortAccountId,
+                  args.unfilteredCountFilters,
+                  args.dateRange,
+                ),
+          }),
     };
   }
 
@@ -767,13 +817,13 @@ export async function queryDetailPage(args: DetailPageQueryArgs): Promise<Detail
   const limit = pageOffset + fetchRows;
   // 余额取折叠集合（全量账本）算出的值，页码取显示集合的编号：范围 / 筛选只影响
   // 「列出哪些行」，不影响「每行余额是多少」。
-  const rows = await prisma.$queryRaw<Array<{ id: string; runningBalance: unknown; totalCount: unknown; dayKey: string }>>(Prisma.sql`
+  const rows = await prisma.$queryRaw<Array<{ id: string; runningBalance: unknown; totalCount: unknown; unfilteredCount?: unknown; dayKey: string }>>(Prisma.sql`
     ${orderingCtes}
     SELECT
       p."id" AS "id",
       (COALESCE(lb."anchorBalance", 0) + lb."groupBalance") AS "runningBalance",
       CAST(lb."dayKey" AS TEXT) AS "dayKey",
-      (SELECT MAX(p2."rowNumber") FROM "paged" p2) AS "totalCount"
+      (SELECT MAX(p2."rowNumber") FROM "paged" p2) AS "totalCount"${unfilteredCountColumn}
     FROM "paged" p
     INNER JOIN "ledger_balanced" lb ON lb."id" = p."id"
     WHERE p."rowNumber" > ${pageOffset}
@@ -798,13 +848,13 @@ export async function queryDetailPage(args: DetailPageQueryArgs): Promise<Detail
     page = Math.min(requestedPage, Math.max(1, Math.ceil(totalCount / pageSize)));
     const retryOffset = (page - 1) * pageSize;
     if (retryOffset !== pageOffset) {
-      pageRows = await prisma.$queryRaw<Array<{ id: string; runningBalance: unknown; totalCount: unknown; dayKey: string }>>(Prisma.sql`
+      pageRows = await prisma.$queryRaw<Array<{ id: string; runningBalance: unknown; totalCount: unknown; unfilteredCount?: unknown; dayKey: string }>>(Prisma.sql`
         ${orderingCtes}
         SELECT
           p."id" AS "id",
           (COALESCE(lb."anchorBalance", 0) + lb."groupBalance") AS "runningBalance",
           CAST(lb."dayKey" AS TEXT) AS "dayKey",
-          (SELECT MAX(p2."rowNumber") FROM "paged" p2) AS "totalCount"
+          (SELECT MAX(p2."rowNumber") FROM "paged" p2) AS "totalCount"${unfilteredCountColumn}
         FROM "paged" p
         INNER JOIN "ledger_balanced" lb ON lb."id" = p."id"
         WHERE p."rowNumber" > ${retryOffset}
@@ -825,6 +875,20 @@ export async function queryDetailPage(args: DetailPageQueryArgs): Promise<Detail
     page,
     pageIds: pageRows.map((row) => String(row.id)),
     runningBalanceById,
+    ...(args.unfilteredCountFilters === undefined
+      ? {}
+      : {
+          unfilteredTotalCount: pageRows.length > 0
+            ? Math.max(0, Math.floor(Number(pageRows[0].unfilteredCount) || 0))
+            : await countEntries(
+                accountIds,
+                args.householdId,
+                await getHouseholdTimeZone(args.householdId),
+                args.sortAccountId,
+                args.unfilteredCountFilters,
+                args.dateRange,
+              ),
+        }),
   };
 }
 

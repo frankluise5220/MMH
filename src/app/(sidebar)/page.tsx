@@ -85,7 +85,7 @@ import { loadRepoShellData } from "@/lib/server/repo-shell-data";
 import { computePositionDisplay } from "@/lib/invest-balance";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { compareDetailEntriesAsc, compareDetailEntriesDescBy, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
-import { parseDetailFiltersParam } from "@/lib/detail-search";
+import { parseDetailFiltersParam, parseDetailTableFiltersParam } from "@/lib/detail-search";
 import { rowWithLinkedInvestmentDisplayDate } from "@/lib/entry-reorder";
 import { loadEntryLinkedInvestmentDisplay } from "@/lib/server/entry-business-display";
 import { SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE,
@@ -385,6 +385,11 @@ export default async function Home({
      * 作用于「时间轴范围内的全部记录」，首屏第一页与 total 都按它算。
      */
     filters?: string;
+    /**
+     * 表头筛选的**展示口径** JSON（漏斗勾选值，与 `filters` 的服务端口径一一对应）。
+     * 只用来恢复勾选态与首屏徽标；查询一律用 `filters`。
+     */
+    tableFilters?: string;
     billMonth?: string;
     hideZeroBills?: string;
     hideSettledBills?: string;
@@ -814,6 +819,17 @@ export default async function Home({
     ...(pagedDetailScopedFilters.entryOriginNot ?? []),
     ...implicitDetailHiddenOrigins,
   ]));
+  // 表头徽标的分母 = 当前视图/时间范围下未做表头筛选的总数。深链接直接带筛选时
+  // 首屏的 totalCount 已经是分子，所以按「只带默认隐藏口径」的谓词再数一遍 ——
+  // 但**不再整份重取一次首屏**（那等于把全量账本 CTE + 排序 + 取 1 行算第二遍，
+  // 筛选态首屏实测多花 0.7–1s）。分母随这一页的查询一起回来，见
+  // `queryDetailPage` 的 `unfilteredCountFilters`。
+  const hasPagedDetailTableFilters = Object.keys(pagedDetailScopedFilters).length > 0;
+  const pagedDetailUnfilteredCountFilters = usePagedDetailEntries && !useClientDetailCache && hasPagedDetailTableFilters
+    ? (implicitDetailHiddenOrigins.length > 0
+        ? { entryOriginNot: implicitDetailHiddenOrigins }
+        : {})
+    : undefined;
   const pagedDetailData = usePagedDetailEntries && !useClientDetailCache
     ? await loadEntriesPageForAccount(
         isAllCashView ? cashLedgerAccountIds : accountId,
@@ -835,24 +851,7 @@ export default async function Home({
         pagedDetailPageSize,
         initialDetailRangeStr,
         pagedDetailFetchRows,
-      )
-    : null;
-  // 表头徽标的分母 = 当前视图/时间范围下未做表头筛选的总数。深链接直接带筛选时
-  // 首屏的 totalCount 已经是分子，必须另取一次只带默认隐藏口径的计数。
-  const hasPagedDetailTableFilters = Object.keys(pagedDetailScopedFilters).length > 0;
-  const unfilteredPagedDetailData = usePagedDetailEntries && !useClientDetailCache && hasPagedDetailTableFilters
-    ? await loadEntriesPageForAccount(
-        isAllCashView ? cashLedgerAccountIds : accountId,
-        JSON.stringify({
-          ...hidFilter,
-          filters: implicitDetailHiddenOrigins.length > 0
-            ? { entryOriginNot: implicitDetailHiddenOrigins }
-            : {},
-        }),
-        1,
-        1,
-        initialDetailRangeStr,
-        1,
+        pagedDetailUnfilteredCountFilters,
       )
     : null;
 
@@ -1077,7 +1076,7 @@ export default async function Home({
     return true;
   });
   const detailFilteredCount = pagedDetailData?.totalCount ?? filteredEntries2.length;
-  const detailOriginalCount = unfilteredPagedDetailData?.totalCount
+  const detailOriginalCount = pagedDetailData?.unfilteredTotalCount
     ?? pagedDetailData?.totalCount
     ?? entries.length;
   const detailTotalPages = Math.max(1, Math.ceil(detailFilteredCount / pageSize));
@@ -4159,6 +4158,12 @@ export default async function Home({
                   initialPage={safeDetailPage}
                   initialPageSize={pageSize}
                   initialDateRange={initialDetailDateRange ?? undefined}
+                  // 表头筛选的初值由服务端从 URL 解出来传下去：客户端自己读
+                  // `window.location` 会让首帧（SSR 无徽标 / 客户端有徽标）对不上，
+                  // hydration 失败后整张表重建，徽标会先闪 `null` 再闪 `0/0`。
+                  initialTableFilters={parseDetailTableFiltersParam(
+                    Array.isArray(params?.tableFilters) ? params.tableFilters[0] : params?.tableFilters,
+                  ) ?? undefined}
                   initialDetailAll={detailAll}
                   initialEntriesFromClientCache={useClientDetailCache}
                   initialClientDetailCacheHint={params?._detailCache === "1"}

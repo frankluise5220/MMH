@@ -55,24 +55,38 @@ export async function buildStatisticsFundDisplayResolver(
     };
     const linkedFundRows: LinkedFundRow[] = [];
     const seenRowIds = new Set<string>();
-    for (const part of chunk(entryIds, IN_CHUNK_SIZE)) {
-      const rows = await prisma.fundTransaction.findMany({
-        where: {
-          ...(householdId ? { householdId } : {}),
-          deletedAt: null,
-          OR: [
-            { cashEntryId: { in: part } },
-            { cashFlows: { some: { txRecordId: { in: part } } } },
-            { EntryBusinessLink: { some: { deletedAt: null, cashEntryId: { in: part } } } },
-          ],
-        },
-        select,
-      });
+    const rememberRows = (rows: LinkedFundRow[]) => {
       for (const row of rows) {
         if (seenRowIds.has(row.id)) continue;
         seenRowIds.add(row.id);
         linkedFundRows.push(row);
       }
+    };
+    for (const part of chunk(entryIds, IN_CHUNK_SIZE)) {
+      // 三条腿分开查、并行跑，别写成一条 OR：OR 跨三个关系时 Postgres 用不上
+      // 单列索引，只能退化成对 fundTransaction 的顺序扫描 + 多次子查询（4000 个
+      // entryId 实测 3-10 秒）。拆开后每条都是索引查找，结果集在 JS 里按 id 去重。
+      const baseWhere = {
+        ...(householdId ? { householdId } : {}),
+        deletedAt: null,
+      };
+      const [byCashEntry, byCashFlow, byBusinessLink] = await Promise.all([
+        prisma.fundTransaction.findMany({
+          where: { ...baseWhere, cashEntryId: { in: part } },
+          select,
+        }),
+        prisma.fundTransaction.findMany({
+          where: { ...baseWhere, cashFlows: { some: { txRecordId: { in: part } } } },
+          select,
+        }),
+        prisma.fundTransaction.findMany({
+          where: { ...baseWhere, EntryBusinessLink: { some: { deletedAt: null, cashEntryId: { in: part } } } },
+          select,
+        }),
+      ]);
+      rememberRows(byCashEntry);
+      rememberRows(byCashFlow);
+      rememberRows(byBusinessLink);
     }
 
     const rememberLinkedFund = (entryId: string | null | undefined, row: LinkedFundDisplaySource) => {

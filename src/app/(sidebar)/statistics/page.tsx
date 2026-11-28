@@ -264,8 +264,10 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
     ...fundAccountMoneyIncomeEntries,
     ...allAccounts.map((account) => ({ accountId: account.id })),
   ]);
+  // 只有投资行会用到这个解析器（盈亏列表的基金名/代码）。把 4000 条普通收支一起
+  // 丢进去，会白做几轮跨三张表的关联查询（实测 1.2-4 秒）。
   const resolvePnlFundDisplay = await buildStatisticsFundDisplayResolver(
-    [...filteredEntries, ...wealthStatisticEntries],
+    filteredEntries.filter((entry) => entry.type === TransactionType.investment),
     ctx.householdId,
   );
 

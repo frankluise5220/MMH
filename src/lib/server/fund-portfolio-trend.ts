@@ -23,7 +23,7 @@ import { prisma } from "@/lib/db/prisma";
 import { AccountKind } from "@prisma/client";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision-core";
-import { getLatestFundNavOnOrBefore } from "@/lib/fund/navCache";
+import { chunk, IN_CHUNK_SIZE } from "@/lib/server/prisma-in-chunks";
 import { BENCHMARK_OPTIONS, DEFAULT_BENCHMARK_CODE, resolveBenchmarkCode } from "@/lib/benchmark-options";
 
 export type FundTrendPoint = {
@@ -324,19 +324,54 @@ async function loadBenchmarkMonthly(
 // ── Monthly NAV helper ──────────────────────────────────────────────────────
 
 /**
- * For a given fund code and a target month (YYYY-MM), return the last
- * available NAV on or before the last day of that month.
+ * 按月序列预加载后的同步查找：返回「≤ 月末的最后一条净值」。
+ *
+ * 原实现每个 (基金, 月份) 都发一条 `findFirst ... ORDER BY navDate DESC`：
+ * 30 只基金 × 150 个月 ≈ 4500 次往返，统计页光这一段就要几十秒。
+ * FundNavCache 全表只有几千行，一次 IN 查询整段序列进内存后二分即可。
  */
-async function getNavOnOrBeforeMonthEnd(
-  fundCode: string,
+function navOnOrBeforeMonthEnd(
+  series: Array<{ day: number; nav: number }> | undefined,
   month: string,
-): Promise<{ nav: number; navDate: Date } | null> {
+): { nav: number; navDate: Date } | null {
+  if (!series || series.length === 0) return null;
   const [y, m] = month.split("-").map(Number);
-  const monthEnd = new Date(Date.UTC(y, m - 1 + 1, 0)); // last day of month
-  // 历史净值只经 navCache 的共享口径取值（≤ 月末最近一条）。
-  const row = await getLatestFundNavOnOrBefore(fundCode, monthEnd);
-  if (!row || Number(row.nav) <= 0) return null;
-  return { nav: Number(row.nav), navDate: row.navDate };
+  const monthEnd = Date.UTC(y, m - 1 + 1, 0); // last day of month
+  let lo = 0;
+  let hi = series.length - 1;
+  let found: { day: number; nav: number } | null = null;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (series[mid].day <= monthEnd) {
+      found = series[mid];
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return found ? { nav: found.nav, navDate: new Date(found.day) } : null;
+}
+
+/** 一次取回全部基金的净值序列（表很小：几千行），供上面的二分查找用。 */
+async function loadNavSeriesByFundCode(fundCodes: string[]) {
+  const codes = Array.from(new Set(fundCodes.map((code) => code.trim()).filter(Boolean)));
+  const seriesByCode = new Map<string, Array<{ day: number; nav: number }>>();
+  if (codes.length === 0) return seriesByCode;
+  for (const part of chunk(codes, IN_CHUNK_SIZE)) {
+    const rows = await prisma.fundNavCache.findMany({
+      where: { fundCode: { in: part } },
+      select: { fundCode: true, navDate: true, nav: true },
+      orderBy: [{ fundCode: "asc" }, { navDate: "asc" }],
+    });
+    for (const row of rows) {
+      const nav = Number(row.nav);
+      if (!Number.isFinite(nav) || nav <= 0) continue;
+      const list = seriesByCode.get(row.fundCode) ?? [];
+      list.push({ day: row.navDate.getTime(), nav });
+      seriesByCode.set(row.fundCode, list);
+    }
+  }
+  return seriesByCode;
 }
 
 // ── Main loader ─────────────────────────────────────────────────────────────
@@ -512,6 +547,10 @@ export async function loadFundPortfolioTrendData(
   // Pre-load NAVs for the end of each month (batch per fund)
   // Cache: `${fundCode}:${month}` → nav
   const navLookupCache = new Map<string, { nav: number; navDate: Date } | null>();
+  // 一次取回所有相关基金的净值序列，月末净值在内存里二分，不再按 (基金×月份) 往返查库。
+  const navSeriesByCode = await loadNavSeriesByFundCode(
+    transactions.map((tx) => tx.fundCode),
+  );
 
   const points: FundTrendPoint[] = [];
   const emptyMonths: string[] = [];
@@ -641,7 +680,7 @@ export async function loadFundPortfolioTrendData(
         const cacheKey = `${pos.fundCode}:${month}`;
         let navInfo = navLookupCache.get(cacheKey);
         if (navInfo === undefined) {
-          navInfo = await getNavOnOrBeforeMonthEnd(pos.fundCode, month);
+          navInfo = navOnOrBeforeMonthEnd(navSeriesByCode.get(pos.fundCode), month);
           navLookupCache.set(cacheKey, navInfo);
         }
         if (navInfo && navInfo.nav > 0) {

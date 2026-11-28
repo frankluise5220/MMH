@@ -1233,14 +1233,15 @@ function buildNote(item: ParsedItem) {
 
 /**
  * 批量快路径判定（2026-11-04 用户：「有没有新方案能提升导入速度，不用一行一行的添加」）。
- * 只收普通「支出/收入」行：转账/投资（双分行）、分类学习行、带账单期字段的行（邮件账单）
- * 一律走原逐行路径，保证行为等价。银行借记卡 CSV 的绝大多数行都命中快路径。
+ * 只收普通「支出/收入」行：转账/投资（双分行）、分类学习行一律走原逐行路径，保证行为
+ * 等价。银行借记卡 CSV 与信用卡邮件账单的绝大多数行都命中快路径。
  */
 function canFastPathItem(item: ParsedItem) {
   if (item.type !== "expense" && item.type !== "income") return false;
-  if (item.categoryUserEdited) return false;
-  const meta = item._meta;
-  if (meta?.statementAmount != null || meta?.statementPeriodStart || meta?.statementPeriodEnd || meta?.statementDueDate) return false;
+  // 用户改过分类/机构时慢路径会写「学习规则」，这两个副作用不能在批量插入里丢。
+  if (item.categoryUserEdited || item.institutionUserEdited) return false;
+  // 账单期字段（statementAmount/periodStart/...）只影响导入后的账单锁定，不写 TxRecord：
+  // 批量插入后按行算锁即可，不必再把整张信用卡账单退回逐行 create。
   return true;
 }
 
@@ -1727,13 +1728,13 @@ export async function POST(req: Request) {
   };
 
   // 批量快路径（2026-11-04 用户：「不用一行一行的添加」）：普通支出/收入行预热缓存后
-  // 整批 createManyAndReturn 一次插入（返回 id，标签仍整批挂）。双分行/投资/分类学习/
-  // 带账单期字段的行、以及邮件账单导入走原逐行路径；快路径抛错时**未插入的行**整组
-  // 回退逐行（createManyAndReturn 是单条语句，失败即整块未插入，不会产生半批）。
+  // 整批 createManyAndReturn 一次插入（返回 id，标签仍整批挂）。双分行/投资/分类学习行
+  // 走原逐行路径；快路径抛错时**未插入的行**整组回退逐行（createManyAndReturn 是单条
+  // 语句，失败即整块未插入，不会产生半批）。
+  // 邮件账单（mailSource）同样走快路径：行数据与逐行分支 1:1（source/entryOrigin/
+  // importBatchId 都由 options.importBatchId 推出），账单期字段只影响下方的锁。
   const slowIdx: number[] = [];
-  if (mailSource) {
-    for (let i = 0; i < items.length; i++) slowIdx.push(i);
-  } else {
+  {
     const fastIdx: number[] = [];
     for (let i = 0; i < items.length; i++) (canFastPathItem(items[i]) ? fastIdx : slowIdx).push(i);
     if (fastIdx.length > 0) {
@@ -1764,7 +1765,17 @@ export async function POST(req: Request) {
             const item = items[chunk[k]];
             pushCreatedRecord(item, { id: row.id, accountId: (datas[k].accountId as string) ?? null, toAccountId: null });
           });
+          // 先记账已插入，再算账单锁：锁查询万一抛错，回退逐行路径不能把这一块重插一遍。
           doneCount += chunk.length;
+          // 账单期锁定与插库解耦：插入是整批一条语句，锁只按「账户 + 账单月」去重后
+          // 由 lockImportedStatementBills 统一 upsert，逐行算锁不会产生额外写。
+          for (let k = 0; k < chunk.length; k += 1) {
+            const statementBillLock = await statementBillLockForImportedRecord(prisma, householdId, items[chunk[k]], {
+              accountId: (datas[k].accountId as string) ?? null,
+              toAccountId: null,
+            }, options.lookupCache);
+            if (statementBillLock) statementBillLocks.push(statementBillLock);
+          }
         }
       } catch {
         // 快路径失败：未插入的行走原逐行路径（错误信息逐行回报，与旧行为一致）。
@@ -1924,12 +1935,19 @@ export async function POST(req: Request) {
     }
   }
 
-  await refreshCreditCardCycleCachesForAccountIds({
-    householdId,
-    accountIds: touchedAccountIds,
-  }).catch((error) => {
-    console.error("Failed to refresh credit-card cycles after statement import:", error);
-  });
+  // 信用卡周期缓存重算要扫该卡全部历史流水：客户端一次导入拆成 10 批，
+  // 每批都全量重算等于把同一份账单算 10 遍（实测单卡 2000 行是秒级）。
+  // 非末批只失效缓存（下次读取时按需重算），末批再全量算一次把最终结果落稳。
+  if (parse.data.isLastBatch) {
+    await refreshCreditCardCycleCachesForAccountIds({
+      householdId,
+      accountIds: touchedAccountIds,
+    }).catch((error) => {
+      console.error("Failed to refresh credit-card cycles after statement import:", error);
+    });
+  } else {
+    await invalidateCreditCardCycleCacheForAccountIds(touchedAccountIds);
+  }
 
   if (importBatchId && created.length === 0) {
     await prisma.importBatch.delete({ where: { id: importBatchId } }).catch(() => null);

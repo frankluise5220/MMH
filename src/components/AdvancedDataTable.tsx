@@ -249,6 +249,14 @@ export type AdvancedDataTableColumn<T> = {
    */
   menuClassName?: string;
   filterText?: (row: T) => string | null | undefined;
+  /**
+   * 自定义「这一行是否命中该列筛选值」。缺省按 `filterText` 与勾选值严格相等。
+   *
+   * 列显示的只是值的一个面（例如「关联账户」列只显示账户列的另一侧），而服务端同一
+   * 条件的口径可能更宽（两侧任一命中）。本地筛选要和分页模式的结果一致时必须走这里，
+   * 不能靠改 `filterText` —— 那会把单元格显示的值也一起改掉。
+   */
+  filterMatch?: (row: T, values: string[]) => boolean;
   sortValue?: (row: T) => string | number | null | undefined;
   filterKind?: "multi" | "dateRange" | "numberRange" | "text";
   filterNumber?: (row: T) => number | null | undefined;
@@ -990,8 +998,12 @@ type AdvancedDataTableProps<T> = {
    *
    * `remoteFilters` 下 `rows` 只有当前一页，按 `filteredRows.length / rows.length` 算
    * 出来恒等于「23/23」——徽标变得毫无信息量。调用方知道服务端口径的总数，传进来即可。
+   *
+   * 两项都可以只给一项：分母由服务端给出、分子由表格本地算（「全部」模式整份在本
+   * 地，命中数只有表格自己知道；而分母不能拿「已加载的行数」充数，否则加载到一半
+   * 会显示成「133/133」）。
    */
-  filterCounts?: { filtered: number; total: number };
+  filterCounts?: { filtered?: number; total?: number };
   /**
    * 漏斗候选值的行集（缺省 = `rows`）。
    *
@@ -1108,6 +1120,7 @@ function sortFilterValue(a: string, b: string) {
 
 function rowMatchesColumnFilter<T>(row: T, column: AdvancedDataTableColumn<T>, values: string[] | undefined) {
   if (!column.filterText || (values?.length ?? 0) === 0) return true;
+  if (column.filterMatch) return column.filterMatch(row, values ?? []);
   const rawValue = column.filterText(row);
   if (rawValue == null) return false;
   const value = rawValue.trim() || "-";
@@ -1374,6 +1387,10 @@ export function AdvancedDataTable<T>({
   const [filters, setFilters] = useState<Partial<Record<string, string[]>>>(() => ({ ...initialFilters }));
   /** hydration 里要用初值兜底，但初值不能进依赖：调用方传内联对象会让 effect 每渲染重跑。 */
   const initialFiltersRef = useRef(initialFilters);
+  // 初值必须跟着最新 props 走：`notifyLocalFiltersChange` 的调用方把 URL 当筛选真源，
+  // 从分页切到「全部」时 effect 才第一次回填，此时要读到**那一刻**的地址栏条件，
+  // 而不是首屏冻结的那份（用户可能是进页面之后才筛的）。
+  initialFiltersRef.current = initialFilters;
   /** 已经 hydrate 过的 storage key，保证回填只做一次。 */
   const hydratedDisplayStateKeyRef = useRef<string | null>(null);
   /** 服务端筛选模式下已经认过的数据集 key（换账户 / 换数据集要清掉旧筛选）。 */
@@ -1648,12 +1665,22 @@ export function AdvancedDataTable<T>({
       writeJson(sortStorageKey, null);
       writeJson(filtersStorageKey, {});
     } else {
-      const storedFilters = normalizeStoredFilters(
-        readJson<Partial<Record<string, string[]>>>(filtersStorageKey, {}),
-        persistedFilterKeys,
-      );
-      // 没有任何存档筛选时落回调用方给的初值（默认只看最近 5 年）。不这样做，
-      // 这次 hydration 会用空对象把刚注入的默认值直接抹掉，chip 又显示「全部时间」。
+      /**
+       * `notifyLocalFiltersChange` 的表格把筛选真源放在 URL：localStorage 里存的是
+       * 上一次本地筛选的旧条件（同一 storage key 跨会话复用）。一旦在这里回填，
+       * 它会被当成用户刚选的值上抛并写回 URL —— 用户从分页切「全部记录」时，
+       * 筛选就被换成上次筛过的另一个账户。所以这类表格只认调用方给的初值，
+       * 并把遗留存档清掉，免得以后又被别的路径读到。
+       */
+      if (notifyLocalFiltersChange) writeJson(filtersStorageKey, {});
+      const storedFilters = notifyLocalFiltersChange
+        ? {}
+        : normalizeStoredFilters(
+          readJson<Partial<Record<string, string[]>>>(filtersStorageKey, {}),
+          persistedFilterKeys,
+        );
+      // 没有任何存档筛选时落回调用方给的初值（默认只看最近 5 年 / URL 上的表头筛选）。
+      // 不这样做，这次 hydration 会用空对象把刚注入的默认值直接抹掉，chip 又显示「全部时间」。
       const nextFilters = Object.keys(storedFilters).length === 0
         ? normalizeStoredFilters(initialFiltersRef.current ?? {}, persistedFilterKeys)
         : storedFilters;
@@ -1683,11 +1710,13 @@ export function AdvancedDataTable<T>({
     }
     setActiveFilterColumn(null);
     tableDisplayStateHydratedRef.current = true;
-  }, [filters, filtersStorageKey, persistedFilterKeys, remoteFilters, resetDisplayStateOnMount, sortable, sortStorageKey, sortableColumnKeys]);
+  }, [filters, filtersStorageKey, notifyLocalFiltersChange, persistedFilterKeys, remoteFilters, resetDisplayStateOnMount, sortable, sortStorageKey, sortableColumnKeys]);
 
   useEffect(() => {
     if (!tableDisplayStateHydratedRef.current) return;
     if (remoteFilters) return;
+    // URL 持有筛选时不落盘：存档会在下一次进入本地筛选模式时被回填（见上面的 hydration）。
+    if (notifyLocalFiltersChange) return;
     if (skipNextFiltersWriteRef.current) {
       skipNextFiltersWriteRef.current = false;
       return;
@@ -1697,7 +1726,7 @@ export function AdvancedDataTable<T>({
       Object.entries(filters).filter(([key]) => persistedFilterKeys.has(key)),
     ) as Partial<Record<string, string[]>>;
     writeJson(filtersStorageKey, persisted);
-  }, [filters, filtersStorageKey, persistedFilterKeys, remoteFilters]);
+  }, [filters, filtersStorageKey, notifyLocalFiltersChange, persistedFilterKeys, remoteFilters]);
 
   /**
    * 服务端筛选模式：筛选一变就上抛（跳过挂载时那一帧，初值不算一次「用户操作」）。

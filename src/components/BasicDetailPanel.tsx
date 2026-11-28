@@ -148,6 +148,14 @@ type BasicDetailPanelProps = {
    * 去重取的话，表头会先闪一遍全量数字。
    */
   initialDateRange?: { from: string; to: string };
+  /**
+   * 表头筛选（展示口径）的初值，由 RSC 从 URL 解析后传入。
+   *
+   * 不能只在客户端读 `window.location`：服务端渲染时读不到、首屏没有筛选徽标，客户端
+   * 一上来又有，React 会判定 hydration 不一致并重建整棵子树（徽标先闪 `null`、再闪
+   * `0/0`）。由服务端把同一份条件传下来，两边首帧才一致。
+   */
+  initialTableFilters?: DetailFilterDict;
   initialDetailAll: boolean;
   initialAutoFit?: boolean;
   normalExportFilename: string;
@@ -433,6 +441,20 @@ const TABLE_FILTER_SERVER_KEYS = [
   "emptyResult",
 ] as const;
 
+/**
+ * 这份 `filters` 是否圈出了「结果集」（第三层）。
+ *
+ * `entryOriginNot` 是默认隐藏口径（收益 / 余额校准），它只缩小显示面、不是用户
+ * 筛的条件 —— 只有它时不改变「全部 = 整窗口」的语义。其余任一 key 都说明用户
+ * 已经筛过，整份加载必须按这份条件取，而不是先拉整窗口再在表格里本地筛。
+ */
+function hasResultSetFilter(filters: DetailFilterDict | null): boolean {
+  if (!filters) return false;
+  return Object.keys(filters).some(
+    (key) => key !== "entryOriginNot" && (filters[key]?.length ?? 0) > 0,
+  );
+}
+
 export function BasicDetailPanel({
   accountId,
   isInvestAccount,
@@ -447,6 +469,7 @@ export function BasicDetailPanel({
   initialPage,
   initialPageSize,
   initialDateRange,
+  initialTableFilters: initialTableFiltersProp,
   initialDetailAll,
   initialAutoFit = true,
   normalExportFilename,
@@ -505,6 +528,14 @@ export function BasicDetailPanel({
   // 的来源而不是独立开关，「视口能放几行」也不再单独存一份副本：它就是自适应模式
   // 下的每页行数，还没量过时等于服务端给的首屏页大小。
   const [isPageLoading, setIsPageLoading] = useState(false);
+  /**
+   * 「全部」的整份数据是不是已经到齐。
+   *
+   * 筛选徽标的命中数只有在这一刻才是「整份里命中多少」；之前表格只拿到首屏一页 /
+   * 前几个分块，数出来的是「已加载的行里命中多少」（11 条），和工具栏的「共 701 条」
+   * 对不上，看起来就像同时挂了两个筛选。未到齐时用服务端算好的那个数。
+   */
+  const [allSnapshotDone, setAllSnapshotDone] = useState(false);
   // 「全部」分块加载的进度（已回到本地的行数），仅用于加载提示文案。
   const [allLoadedCount, setAllLoadedCount] = useState(0);
   const [displayedEntryIds, setDisplayedEntryIds] = useState<string[] | null>(null);
@@ -608,6 +639,9 @@ export function BasicDetailPanel({
    * 「全部」模式仍是本地筛选，筛选态由表格自己持久化，这里不参与。
    */
   const [initialTableFilters] = useState<DetailFilterDict | undefined>(() => {
+    // 服务端给的那份优先：首帧必须与 RSC 直出的 HTML 完全一致。没有（老调用方）才在
+    // 客户端读地址栏兜底。
+    if (initialTableFiltersProp) return initialTableFiltersProp;
     if (typeof window === "undefined") return undefined;
     const raw = new URL(window.location.href).searchParams.get("tableFilters");
     return parseDetailTableFiltersParam(raw) ?? undefined;
@@ -821,6 +855,49 @@ export function BasicDetailPanel({
   // 缓存按显示层口径分桶：「收益」关掉 / 「全部记录」隐藏余额校准都不能和全量混用。
   // 全部记录用的是带后缀的桶，单账户复用共享缓存时只会认不带后缀的全量桶。
   const detailAllKey = `${detailAllCacheKey(detailCacheScopeId)}${hideMoneyIncome ? ":hideIncome" : ""}${hideBalanceReconcile ? ":hideBalanceReconcile" : ""}`;
+  /**
+   * 「全部」的整份加载按**第三层结果集**取数。
+   *
+   * 三层模型：`range`（第二层）圈出窗口，`tableFilters`/`filters`（第三层）圈出
+   * 结果集，「全部 / 每页多少行」只是结果集之上的浏览方式。所以「全部」要拉的是
+   * **结果集**，不是整个窗口 —— 第三层筛到 705 条时刷新页面，只该取这 705 条。
+   *
+   * 以前这里只带默认隐藏口径（`entryOriginNot`），把 3 万多条整份拉回来再在表格里
+   * 本地筛：工具栏一直报「正在加载全部 35804 条记录」，而且是真的在拉那 3 万条
+   * （1×500 + 若干×5000 块，几十秒）。
+   *
+   * 缓存按筛选项分桶：不筛的那份仍留在 `detailAllKey` 下（分页模式的备料要用它），
+   * 带筛选的放在 `:f:` 后缀的桶里，互不覆盖 —— 取消筛选时不需要重拉整窗口那份。
+   */
+  const [allViewFiltersJson, setAllViewFiltersJson] = useState(() => {
+    if (typeof window === "undefined") return "";
+    return new URL(window.location.href).searchParams.get("filters") ?? "";
+  });
+  const allViewFilters = useMemo(
+    () => parseDetailFiltersParam(allViewFiltersJson),
+    [allViewFiltersJson],
+  );
+  const allViewResultFiltered = useMemo(() => hasResultSetFilter(allViewFilters), [allViewFilters]);
+  /** 「全部」这一份要下推的条件：第三层条件 + 默认隐藏口径（与 `buildPageFilters` 同口径）。 */
+  const buildAllViewFilters = useCallback((hideIncomeOverride?: boolean): DetailFilterDict => {
+    const filters: DetailFilterDict = { ...(allViewFilters ?? {}) };
+    const excluded = [
+      ...(filters.entryOriginNot ?? []),
+      ...((hideIncomeOverride ?? hideMoneyIncome) ? [TRANSACTION_SOURCE_MONEY_INCOME] : []),
+      ...(hideBalanceReconcile ? [BALANCE_RECONCILE_SOURCE] : []),
+    ];
+    if (excluded.length > 0) filters.entryOriginNot = Array.from(new Set(excluded));
+    return filters;
+  }, [allViewFilters, hideBalanceReconcile, hideMoneyIncome]);
+  const allViewFetchFilters = useMemo(
+    () => (allViewResultFiltered ? buildAllViewFilters() : implicitFilters),
+    [allViewResultFiltered, buildAllViewFilters, implicitFilters],
+  );
+  const detailAllViewKey = allViewResultFiltered
+    ? `${detailAllKey}:f:${JSON.stringify(allViewFetchFilters ?? {})}`
+    : detailAllKey;
+  // 「全部 + 筛选」这次加载的结果集条数（进度文案用；表头那行仍是第二层的未筛总数）。
+  const [allViewTotal, setAllViewTotal] = useState(0);
   const businessTodayKey = todayDateBusinessYmd(getTimeZonePreference());
 
   /**
@@ -912,10 +989,18 @@ export function BasicDetailPanel({
     // 期初余额还没到：这一刻本地折出来的余额是错的，先不动表格 —— 沿用上一份（或首屏
     // 那份服务端算好的）余额，也不收掉加载态，等数字到了再整体换一次。
     if (openingBalancePending) return;
+    // 任务刚发起、一行都还没回来：这时候绝不能把表格清空。首屏那份（服务端按同一
+    // 口径算好的）正好可以继续显示，清空只会让用户对着空表等十几秒。
+    if (snapshot.entries.length === 0 && !snapshot.done) {
+      setAllSnapshotDone(false);
+      setIsPageLoading(true);
+      return;
+    }
     const last = lastAppliedAllRef.current;
     // 期初余额要进 scopeKey：它比整份明细晚到（一个数字 vs 几万行），不进来就会被
     // 「同一份快照已经落过」的守卫吞掉，表格停在起点为 0 的那一份余额上。
-    const scopeKey = `${detailAllKey}|${accountId}|${openingBalance}`;
+    // 筛选口径也要进：同一份窗口、换一个筛选结果是另一份行，必须重新落到表格上。
+    const scopeKey = `${detailAllViewKey}|${accountId}|${openingBalance}`;
     const rows = filterEntriesByRange(scopeEntriesOf(snapshot.entries), detailAllRangeKey);
     if (
       scopeKey !== last.scopeKey
@@ -926,25 +1011,37 @@ export function BasicDetailPanel({
       setLocalEntries(rows);
     }
     if (snapshot.done) {
-      // 计数必须是「当前窗口内」的行数：窗口从 5 年收到 3 年，表头不能还报 5 年的总数。
+      // 已加载进度用「当前窗口内」的行数：窗口从 5 年收到 3 年，表头不能还报 5 年的总数。
       setAllLoadedCount(rows.length);
-      setLocalTotalCount(rows.length);
-      setLocalOriginalCount(rows.length);
+      // 分母是「窗口内未筛总数」：服务端 count 与本地的整份行都按未筛口径，取大值兜底。
+      // 绝不能直接赋值 rows.length —— 首屏那份 rows 可能是服务端先按表头筛选给的一页，
+      // 赋值后徽标就变成「133/133」。
+      setLocalOriginalCount((previous) => Math.max(previous, rows.length));
+      // 注意：不再写 localTotalCount。它是**分页结果集**的条数（第三层的分子），只有
+      // 筛选变化 / 取回一页时才能改；「全部」模式把它写成窗口总行数，会让切回按页时
+      // 徽标先变成「20367/20367」，换每页行数也会顺手把它改掉。
+      if (allViewResultFiltered && Number.isFinite(snapshot.totalCount)) {
+        setAllViewTotal(snapshot.totalCount);
+      }
       locatingDateRef.current = false;
       setIsPageLoading(false);
+      setAllSnapshotDone(true);
     } else {
       // 共享缓存里的 totalCount / loadedCount 是「全部收支」的全局口径，绝不能写进
       // 单账户表头：本账户只有三千多行，界面却会显示「共 43629 条 · 已加载 15500 条」。
       // 复用期间按本账户已到行数报进度、总数沿用服务端的账户口径；按自己 accountId
       // 加载时仓库里的数本来就是本账户口径，照常用。
       setAllLoadedCount(reuseSharedAllCash ? rows.length : snapshot.loadedCount);
+      setAllSnapshotDone(false);
+      // 带第三层筛选时 snapshot.totalCount 是**命中数**（结果集条数），写进分母会把
+      // 「共 N 条」压成命中数；它只用来报进度（见 allViewTotal）。
       if (!reuseSharedAllCash && Number.isFinite(snapshot.totalCount)) {
-        setLocalTotalCount(snapshot.totalCount);
-        setLocalOriginalCount(snapshot.totalCount);
+        if (allViewResultFiltered) setAllViewTotal(snapshot.totalCount);
+        else setLocalOriginalCount(snapshot.totalCount);
       }
       setIsPageLoading(true);
     }
-  }, [accountId, detailAllKey, detailAllRangeKey, openingBalance, openingBalancePending, reuseSharedAllCash, scopeEntriesOf]);
+  }, [accountId, allViewResultFiltered, detailAllRangeKey, detailAllViewKey, openingBalance, openingBalancePending, reuseSharedAllCash, scopeEntriesOf]);
 
   /**
    * 整份明细缓存（`detail-all-store`，按账户）是**唯一数据源**。
@@ -1010,20 +1107,21 @@ export function BasicDetailPanel({
       // 收益开关刚切时 props 还是旧值，key 要按 override 现算，不能用这一帧的闭包。
       if (hideIncomeOverride === undefined && scope.key !== detailAllKey) return;
       const hide = hideIncomeOverride ?? hideMoneyIncome;
-      const effectiveKey = hideIncomeOverride === undefined
+      const baseKey = hideIncomeOverride === undefined
         ? detailAllKey
         : `${detailAllCacheKey(scope.accountId)}${hide ? ":hideIncome" : ""}${hideBalanceReconcile ? ":hideBalanceReconcile" : ""}`;
-      const effectiveOrigins = [
-        ...(hide ? [TRANSACTION_SOURCE_MONEY_INCOME] : []),
-        ...(hideBalanceReconcile ? [BALANCE_RECONCILE_SOURCE] : []),
-      ];
-      const effectiveFilters = effectiveOrigins.length > 0 ? { entryOriginNot: effectiveOrigins } : null;
-      // 「全部」= 窗口内整份：缓存里已经有了，只取快照，不发请求。
+      // 第三层筛选圈出的是**结果集**：整份要按它取数（见 `detailAllViewKey`），
+      // 不能拿整窗口那份本地筛 —— 那等于为了 705 条去拉 3 万多条。
+      const viewFilters = buildAllViewFilters(hideIncomeOverride);
+      const effectiveKey = hasResultSetFilter(viewFilters)
+        ? `${baseKey}:f:${JSON.stringify(viewFilters)}`
+        : baseKey;
+      // 「全部」= 结果集整份：缓存里已经有了，只取快照，不发请求。
       const snapshot = ensureDetailAll<DetailEntry>({
         key: effectiveKey,
         accountId: scope.accountId,
         range: detailAllRangeKey,
-        filters: effectiveFilters,
+        filters: hasResultSetFilter(viewFilters) ? viewFilters : implicitFilters,
         errorMessage: t("basicDetail.loadFailed"),
       });
       // 空快照 = 刚发起的任务还没有数据，别把已有列表清空。
@@ -1099,7 +1197,7 @@ export function BasicDetailPanel({
       locatingDateRef.current = false;
       setIsPageLoading(false);
     })();
-  }, [accountId, applyDetailAllSnapshot, buildDetailPageRequestKey, buildPageFilters, clientPaginationEnabled, detailAll, detailAllKey, detailAllRangeKey, hasDetailDateRange, hideBalanceReconcile, hideMoneyIncome, pageSize, readCachedDetailPage, readUrlDetailFilters, resolveDetailCacheScope, safePage, serverDateRangeKey, t]);
+  }, [accountId, applyDetailAllSnapshot, buildAllViewFilters, buildDetailPageRequestKey, buildPageFilters, clientPaginationEnabled, detailAll, detailAllKey, detailAllRangeKey, hasDetailDateRange, hideBalanceReconcile, hideMoneyIncome, implicitFilters, pageSize, readCachedDetailPage, readUrlDetailFilters, resolveDetailCacheScope, safePage, serverDateRangeKey, t]);
 
   /**
    * 表头「收益」开关：写回 URL（刷新/分享后口径不变），然后按新口径把表格重取一次。
@@ -1144,14 +1242,19 @@ export function BasicDetailPanel({
   // 列出上一个账户的分类与账户名。下一次打开漏斗自然取到新的快照。
   useEffect(() => {
     setTableFilterOptionRows(undefined);
-  }, [detailAllKey, detailAllRangeKey]);
+    // 换了账户 / 窗口 / 筛选口径：上一份「整份已到齐」的结论作废，徽标先回到服务端口径。
+    setAllSnapshotDone(false);
+  }, [detailAllKey, detailAllRangeKey, detailAllViewKey]);
   const handleTableFilterColumnOpen = useCallback(() => {
-    if (detailAll) return;
+    // 候选值要按**第二层**（时间轴窗口内未筛的行）给，否则「全部 + 已筛选」时手上
+    // 只有结果集那几百行，漏斗里就只剩当前这个值，再也换不回别的账户 / 分类。
+    // 整窗口那份缓存还在（先看过不筛的全部）就顺手用它；没有就让表格按自己的行兜底，
+    // 绝不为了候选值再拉一遍整窗口。
     const snapshot = peekDetailAll<DetailEntry>(detailAllKey);
     if (!snapshot || snapshot.entries.length === 0) return;
     const windowed = filterEntriesByRange(scopeEntriesOf(snapshot.entries), detailAllRangeKey);
     setTableFilterOptionRows(windowed.length > 0 ? windowed : undefined);
-  }, [detailAll, detailAllKey, detailAllRangeKey, scopeEntriesOf]);
+  }, [detailAllKey, detailAllRangeKey, scopeEntriesOf]);
 
   /**
    * 表头列筛选在分页模式下的落点：**下推服务端**，作用于「时间轴范围内的全部记录」，
@@ -1221,10 +1324,13 @@ export function BasicDetailPanel({
       }
       unfilteredPageSnapshotRef.current = null;
     }
-    // 「全部」模式：整份记录已在本地，过滤由表格自己做，这里再下推服务端只会白拉一页、
-    // 还会把分页状态搅乱。但条件已经写进 URL 了 —— 那是筛选的唯一真源，浏览方式（全部 /
-    // 每页多少行）从属于它：切回按页显示时 RSC 按这份条件重取，不会退回上一次的筛选。
-    if (detailAll) return;
+    // 「全部」模式：整份加载按第三层结果集取数（见 `detailAllViewKey`）。条件刚写进
+    // URL，这里把口径状态推过去，加载 effect 会按新 key 重取一份；旧口径那份留在
+    // 它自己的缓存桶里，切回去不用重拉。表格此刻仍按本地行先筛，等新结果到齐再整体换。
+    if (detailAll) {
+      setAllViewFiltersJson(nextFiltersJson);
+      return;
+    }
     // 条件变了，旧页码没有意义；页码回第 1 页与「按新条件重取」是两件事——
     // 以前这里在非第 1 页直接 return，指望分页状态变更顺手触发一次取数，
     // 但 ref 身份没对齐时那次取数会被过期判定丢掉，界面就停在旧结果上
@@ -1294,11 +1400,12 @@ export function BasicDetailPanel({
       const scope = resolveDetailCacheScope();
       // 缓存状态在定时器等待期间变了：等 key 切换后本 effect 重跑，别按旧口径备料。
       if (scope.key !== detailAllKey) return;
+      // 「全部」按第三层结果集取数；分页模式那份备料仍按整窗口（本地切页要用未筛的行）。
       ensureDetailAll<DetailEntry>({
-        key: detailAllKey,
+        key: detailAll ? detailAllViewKey : detailAllKey,
         accountId: scope.accountId,
         range: detailAllRangeKey,
-        filters: implicitFilters,
+        filters: detailAll ? allViewFetchFilters : implicitFilters,
         errorMessage: t("basicDetail.loadFailed"),
       });
     };
@@ -1309,20 +1416,33 @@ export function BasicDetailPanel({
     const timer = window.setTimeout(start, DETAIL_PRELOAD_IDLE_DELAY_MS);
     // 期间又切了账户：这一份备料已经没人要了，别再压到服务端上。
     return () => window.clearTimeout(timer);
-  }, [clientPaginationEnabled, detailAll, detailAllKey, detailAllRangeKey, implicitFilters, resolveDetailCacheScope, t]);
+  }, [allViewFetchFilters, clientPaginationEnabled, detailAll, detailAllKey, detailAllRangeKey, detailAllViewKey, implicitFilters, resolveDetailCacheScope, t]);
+
+  // 从按页切回「全部」：让「同一份快照已经落过」的护栏失效。
+  // 快照引用确实没变（整份缓存还在），但表格里的行已经换成了按页那 40 行；护栏若
+  // 继续认为「落过了」，整份行永远回不到表格，徽标就停在「40/20367」。
+  // 先于下面的订阅 effect 执行：同一帧里重新把整份行落回表格。
+  useEffect(() => {
+    if (!detailAll) return;
+    lastAppliedAllRef.current = { scopeKey: "", entries: null, range: undefined };
+    // 落回之前徽标先回到服务端口径，别拿那 40 行去数命中数。
+    setAllSnapshotDone(false);
+    // 换了筛选口径：上一份结果集的条数不能拿来报新一份的进度。
+    setAllViewTotal(0);
+  }, [detailAll, detailAllViewKey]);
 
   // 「全部」的加载由仓库推进，这里只订阅：整份到齐才重建表格（并发分块阶段
   // 只滚进度数字，不为每一块重建两万行），完成时收掉加载态。
   // 组件卸载只取消订阅，任务继续在后台跑完（下次回来直接是成品）。
   useEffect(() => {
     if (!detailAll || !clientPaginationEnabled) return;
-    const unsubscribe = subscribeDetailAll<DetailEntry>(detailAllKey, applyDetailAllSnapshot);
+    const unsubscribe = subscribeDetailAll<DetailEntry>(detailAllViewKey, applyDetailAllSnapshot);
     // 订阅只在「有新块到达」时回调；范围刚变（重挂载 / 改窗口）时先拿现有快照
     // 按新范围重渲染一次 —— 这一刻不该有任何请求。
-    const current = peekDetailAll<DetailEntry>(detailAllKey);
+    const current = peekDetailAll<DetailEntry>(detailAllViewKey);
     if (current) applyDetailAllSnapshot(current);
     return unsubscribe;
-  }, [applyDetailAllSnapshot, clientPaginationEnabled, detailAll, detailAllKey]);
+  }, [applyDetailAllSnapshot, clientPaginationEnabled, detailAll, detailAllViewKey]);
 
   useEffect(() => {
     if (showGuideOverlay) setGuideOverlayOpen(true);
@@ -1846,10 +1966,9 @@ export function BasicDetailPanel({
         if (seq !== locateDateSeqRef.current) return;
         const locatePage = Number(payload.data?.locatePage);
         const nextTotalCount = Number(payload.data?.totalCount);
-        if (Number.isFinite(nextTotalCount)) {
-          setLocalTotalCount(nextTotalCount);
-          setLocalOriginalCount(nextTotalCount);
-        }
+        // 只拿 totalCount 算页码上限，绝不写回第三层的分子 / 分母：换每页行数只是
+        // 「一页装几行」，筛选命中数与未筛总数都只能由筛选本身（取消 / 重新筛）改写。
+        // 以前两处都写，徽标就从「701/20367」变成「701/701」。
         const pages = Math.max(1, Math.ceil((Number.isFinite(nextTotalCount) ? nextTotalCount : localTotalCount) / nextPageSize));
         detailPager.replace({
           mode,
@@ -1868,6 +1987,12 @@ export function BasicDetailPanel({
       });
   };
 
+  // 「全部」加载进度里的总数：有第三层筛选时就是**结果集条数**（要拉的就是它），
+  // 没有时仍按第二层窗口总数报。表头那行「共 N 条」永远是第二层的未筛总数，
+  // 两者不混用：前者说「这次在拉多少」，后者说「窗口里一共多少」。
+  const allLoadTotalCount = allViewResultFiltered
+    ? (allViewTotal > 0 ? allViewTotal : localTotalCount)
+    : localOriginalCount;
   // 「全部」：整份列表一次渲染完，没有页大小可调，所以不测自适应。
   const rowsFitEnabled = detailPager.autoFit;
   /**
@@ -1917,8 +2042,7 @@ export function BasicDetailPanel({
         const locatePage = Number(payload.data?.locatePage);
         const nextTotalCount = Number(payload.data?.totalCount);
         const nextCount = Number.isFinite(nextTotalCount) ? nextTotalCount : localTotalCount;
-        setLocalTotalCount(nextCount);
-        setLocalOriginalCount(nextCount);
+        // 同 applyPageSizeKeepingCenter：定位只算页码，不写第三层的任何数字。
         const pages = Math.max(1, Math.ceil(nextCount / locatePageSize));
         if (!Number.isFinite(locatePage) || locatePage < 1) {
           locatingDateRef.current = false;
@@ -1974,7 +2098,7 @@ export function BasicDetailPanel({
       <BasicDetailBatchDeleteMessage />
       <div ref={panelRef} className="relative flex-1 min-h-0 overflow-hidden">
         <div className="flex min-h-12 items-center justify-between gap-2 border-b border-slate-200 bg-white px-3 desktop:hidden">
-          <span className="text-xs text-slate-500">{t("creditBillDetail.recordCount", { count: localTotalCount })}</span>
+          <span className="text-xs text-slate-500">{t("creditBillDetail.recordCount", { count: localOriginalCount })}</span>
           {showPagination ? (
             <DetailTablePaginationControls
               key={accountScopeKey}
@@ -2023,8 +2147,15 @@ export function BasicDetailPanel({
           initialTableFilters={initialTableFilters}
           onTableFiltersChange={handleTableFiltersChange}
           // 筛选徽标按服务端口径报「筛选后/全部」：分页模式下表格只有一页行，
-          // 按页内行数算会显示成「23/23」，跟筛选无关。
-          filterCounts={!detailAll ? { filtered: localTotalCount, total: localOriginalCount } : undefined}
+          // 按页内行数算会显示成「23/23」，跟筛选无关。「全部」模式整份在本地，
+          // 命中数交给表格自己数；**整份还没到齐时**必须用服务端算好的命中数 ——
+          // 拿已加载的前几百分块去数，会先显示「11/20367」再跳成「701/20367」，
+          // 看起来就像挂了两个筛选。分母在任何时候都是未筛选的窗口总数。
+          filterCounts={detailAll
+            ? (allSnapshotDone
+              ? { total: localOriginalCount }
+              : { filtered: totalCount, total: localOriginalCount })
+            : { filtered: localTotalCount, total: localOriginalCount }}
           // 分页模式下 `rows` 只有当前页：漏斗候选值单独用「时间轴范围内的整份记录」
           // 汇总，打开漏斗时取一次最新快照。
           filterOptionRows={tableFilterOptionRows}
@@ -2044,10 +2175,12 @@ export function BasicDetailPanel({
           onRowsFitChange={rowsFitEnabled ? handleRowsFitChange : undefined}
           toolbarRightContent={
             <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2 text-xs">
-              <span className="min-w-0 text-xs text-slate-600">{t("creditBillDetail.recordCount", { count: localTotalCount })}{hasDetailFilters ? t("basicDetail.filteredSuffix", { count: localOriginalCount }) : ""}{isPageLoading ? (detailAll
+              {/* 「共 N 条」恒为第二层（窗口）的未筛总数，与「全部 / 每页 40 / 80」无关；
+                  第三层筛选的命中数只在徽标 `n/m` 里报（用户 2026-11-28 裁定）。 */}
+              <span className="min-w-0 text-xs text-slate-600">{t("creditBillDetail.recordCount", { count: localOriginalCount })}{isPageLoading ? (detailAll
             ? allLoadedCount > 0
-              ? t("basicDetail.loadingAllSuffix", { count: localTotalCount, loaded: allLoadedCount })
-              : t("basicDetail.loadingAllPending", { count: localTotalCount })
+              ? t("basicDetail.loadingAllSuffix", { count: allLoadTotalCount, loaded: allLoadedCount })
+              : t("basicDetail.loadingAllPending", { count: allLoadTotalCount })
             : t("basicDetail.loadingSuffix")) : ""}</span>
               {showImportExport ? (
                 <>

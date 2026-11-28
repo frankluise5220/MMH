@@ -917,9 +917,10 @@ export function DetailViewClient({
   onFilterColumnOpen?: (columnKey: string) => void;
   /**
    * 筛选徽标的数字口径（`筛选后/全部`）。分页模式下表格只有一页行，按页内行数算会显示
-   * 成「23/23」；由父层给出服务端口径的总数。
+   * 成「23/23」；由父层给出服务端口径的总数。「全部」模式只给分母：命中数由表格本地
+   * 按整份行算，分母仍是「当前窗口内未筛选总数」，不能用已加载行数冒充。
    */
-  filterCounts?: { filtered: number; total: number };
+  filterCounts?: { filtered?: number; total?: number };
   /** Extra batch actions rendered next to the built-in replace/delete buttons.
    * Receives the exact rows the table is rendering, so selection keys always
    * resolve against the same array the user sees. */
@@ -1991,6 +1992,21 @@ export function DetailViewClient({
           accountTypeFilterTextOf(related.id),
         ].filter(Boolean).join(" ");
       },
+      /**
+       * 本地筛选（「全部」模式）与服务端 `related` 谓词同口径：**两侧任一命中**。
+       *
+       * 列里只显示账户列的另一侧，所以按 `filterText` 严格相等会漏掉「这个账户是本行
+       * 账户」的那些行：分页模式筛出 221 条，切「全部」只剩 50 条。服务端本来就按
+       * `accountId OR toAccountId` 匹配（见 detail-query-filters），这里必须对齐。
+       */
+      filterMatch: (e, values) => {
+        const own = accountColumnTarget(e);
+        const related = relatedAccountTarget(e);
+        return [own, related].some((target) => {
+          const label = accountDisplayFallback(target.id, target.name).label;
+          return !!label && values.includes(label);
+        });
+      },
       render: (e) => {
         const related = relatedAccountTarget(e);
         const display = accountDisplayFallback(related.id, related.name);
@@ -2139,7 +2155,7 @@ export function DetailViewClient({
         </span>
       ),
     },
-  ], [accountColumnDefaultHidden, accountColumnDisplayFallback, resolvedAccountColumnLabel, accountColumnMode, accountDisplayFallback, accountId, accountOptionById, accountTypeFilterTextOf, buildEntryEditRequest, dateDisplayFormat, detailCategoryLabel, detailFlowAmountOf, entryProductTypeOf, flowAccountIdOf, inflowCls, outflowCls, openEntryEditor, relatedAccountDefaultHidden, relatedAccountTarget, renderNavigableAccountLabel, runningBalanceDefaultHidden, showAccountColumn, showRunningBalance, t]);
+  ], [accountColumnDefaultHidden, accountColumnDisplayFallback, accountColumnTarget, resolvedAccountColumnLabel, accountColumnMode, accountDisplayFallback, accountId, accountOptionById, accountTypeFilterTextOf, buildEntryEditRequest, dateDisplayFormat, detailCategoryLabel, detailFlowAmountOf, entryProductTypeOf, flowAccountIdOf, inflowCls, outflowCls, openEntryEditor, relatedAccountDefaultHidden, relatedAccountTarget, renderNavigableAccountLabel, runningBalanceDefaultHidden, showAccountColumn, showRunningBalance, t]);
 
   const customToolbarLeft = toolbarMode === "custom" ? (
     <div className="flex min-w-0 items-center gap-2">
@@ -2408,21 +2424,28 @@ export function DetailViewClient({
       dateRangeBoundsLoading={dateRangeBoundsLoading}
       // 表头筛选只有一个真源：URL 里的 tableFilters。分页模式必须用它（条件同时下推服务端）；
       // 「全部」模式整份已在本地，但 URL 上有表头筛选时也要按它恢复，否则刷新后勾选态会
-      // 和地址栏对不上（下次切回分页时又跳成另一套条件）。
-      initialFilters={remoteTableFilters || Object.keys(initialTableFilters ?? {}).length > 0 ? initialTableFilters : initialFilters}
+      // 和地址栏对不上（下次切回分页时又跳成另一套条件）。「全部」模式必须现读地址栏：
+      // 用户常常是进页面之后才筛的，挂载时冻结的 `initialTableFilters` 还是空的。
+      // 只有把筛选外化到 URL 的调用方（传了 onTableFiltersChange）才读地址栏 ——
+      // 账单明细 / 报表下钻在同一页面里也带 tableFilters，不能误吃。
+      initialFilters={remoteTableFilters
+        ? initialTableFilters
+        : (onTableFiltersChange ? readLocationTableFilters() : null) ?? (Object.keys(initialTableFilters ?? {}).length > 0 ? initialTableFilters : initialFilters)}
       // 分页模式：筛选下推服务端（作用于时间轴范围内的全部记录），表格不再本地过滤；
       // 「全部」模式整份都在本地，保持原样。
       remoteFilters={remoteTableFilters}
       // 但筛选值本身只有一个真源：URL。分页模式是下推服务端；「全部」模式由表格本地过滤，
       // 也要把条件外化到 URL —— 否则从「全部」改成按页显示（切每页行数）时，真源切回 URL
       // 里的旧条件，用户刚筛出来的结果会静默退回上一次的筛选。
-      notifyLocalFiltersChange={!remoteTableFilters}
+      // 没有 `onTableFiltersChange` 的调用方（账单明细 / 报表下钻）不把筛选外化，
+      // 它们的列筛选仍按 storageKey 存 localStorage；这里不能顺手把那个存档关掉。
+      notifyLocalFiltersChange={!remoteTableFilters && !!onTableFiltersChange}
       onFiltersChange={(next) => onTableFiltersChange?.({ display: next, server: translateTableFilters(next) })}
       // 漏斗候选值：分页模式下按「时间轴范围内的整份记录」汇总，而不是当前页；
       // 「全部」模式下 rows 本来就是全量，不需要再送一份。
       filterOptionRows={remoteTableFilters ? filterOptionRows : undefined}
       onFilterColumnOpen={remoteTableFilters ? onFilterColumnOpen : undefined}
-      filterCounts={remoteTableFilters ? filterCounts : undefined}
+      filterCounts={remoteTableFilters || onTableFiltersChange ? filterCounts : undefined}
       rowKey={detailEntryRowKey}
       minTableWidth={1160}
       emptyText={resolvedEmptyText}

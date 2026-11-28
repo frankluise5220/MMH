@@ -1,5 +1,7 @@
 import { revalidatePath, revalidateTag } from "next/cache";
 
+import { invalidateInvestmentReportCache } from "@/lib/server/investment-report-cache";
+
 type RevalidateOptions = {
   /**
    * true = 不 purge 首页路由 "/"。
@@ -20,6 +22,9 @@ export function revalidateAfterTxChange(options?: RevalidateOptions) {
   revalidateTag("common-data", "max");
   revalidateTag("entries", "max");
   revalidateTag("category-usage", "max");
+  // 投资收益报表结果缓存在进程内（概览/报表/每日盈亏共用），写流水后必须清掉，
+  // 否则「记完一笔回概览」看到的是旧数字。
+  invalidateInvestmentReportCache();
   if (!options?.skipHomePath) revalidatePath("/");
   revalidatePath("/overview");
   revalidatePath("/accounts");

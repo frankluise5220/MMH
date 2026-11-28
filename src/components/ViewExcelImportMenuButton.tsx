@@ -1541,8 +1541,10 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
         ...(isLastBatch && balanceAdjustments.length > 0 ? { balanceAdjustments } : {}),
       });
 
-      // 与基金/股票导入一致：拆成 10 批顺序提交，单批事务小、避免 NAS 反代超时
-      const IMPORT_BATCH_SIZE = Math.max(1, Math.ceil(items.length / 10));
+      // 与基金/股票导入一致：拆成最多 10 批顺序提交，单批事务小、避免 NAS 反代超时。
+      // 但小账单不该被切成 10 个 2 行的请求：每批都有固定开销（分类规整、归属校验、
+      // 缓存预热），至少 200 行一批，几百行的账单实际只发 1-2 次。
+      const IMPORT_BATCH_SIZE = Math.max(200, Math.ceil(items.length / 10));
       // 服务端每批都回报「本次真正碰过的账户」（含转账对手账户、余额校准账户）。
       // 这里取并集，导入结束后一次性用它触发刷新；只刷当前打开的那个账户会漏掉对手账户。
       const refreshedAccountIds = new Set<string>();
