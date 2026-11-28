@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { CalendarClock, ChevronRight, Pause, Play, Repeat2 } from "lucide-react";
 import { formatMoneyYuan } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
@@ -42,10 +42,15 @@ export function MobileRegularInvest({ plans }: { plans: MobilePlan[] }) {
   const { t } = useI18n();
   const [filter, setFilter] = useState<Filter>("active");
   const [busyId, setBusyId] = useState<string | null>(null);
+  // 暂停 / 恢复只改这一行的状态：不整页 reload（会丢筛选页签与滚动位置）。
+  const [localPlans, setLocalPlans] = useState(plans);
+  useEffect(() => {
+    setLocalPlans(plans);
+  }, [plans]);
 
   const visiblePlans = useMemo(
-    () => plans.filter((plan) => filter === "all" || plan.status === filter),
-    [filter, plans],
+    () => localPlans.filter((plan) => filter === "all" || plan.status === filter),
+    [filter, localPlans],
   );
 
   async function updateStatus(plan: MobilePlan) {
@@ -59,9 +64,19 @@ export function MobileRegularInvest({ plans }: { plans: MobilePlan[] }) {
       });
       const result = await response.json().catch(() => null);
       if (!response.ok || !result?.ok) throw new Error(result?.error ?? t("mobileRegularInvest.updateFailed"));
-      window.location.reload();
+      const updated = result.plan ?? {};
+      const fallbackStatus = action === "pause" ? "paused" : "active";
+      setLocalPlans((current) => current.map((item) => item.id === plan.id
+        ? {
+            ...item,
+            status: updated.status ?? fallbackStatus,
+            nextRunDate: updated.nextRunDate ?? item.nextRunDate,
+            executedCount: updated.executedCount ?? updated.executedRuns ?? item.executedCount,
+          }
+        : item));
     } catch (error) {
       window.alert(error instanceof Error ? error.message : t("mobileRegularInvest.updateFailed"));
+    } finally {
       setBusyId(null);
     }
   }
@@ -71,7 +86,7 @@ export function MobileRegularInvest({ plans }: { plans: MobilePlan[] }) {
       <div className="sticky top-0 z-10 border-b border-slate-200 bg-slate-50/95 px-3 py-2 backdrop-blur">
         <div className="flex items-center justify-between px-1">
           <h1 className="text-sm font-semibold text-slate-900">{t("nav.scheduledTasks")}</h1>
-          <span className="text-xs tabular-nums text-slate-500">{t("mobileRegularInvest.planCount", { count: plans.length })}</span>
+          <span className="text-xs tabular-nums text-slate-500">{t("mobileRegularInvest.planCount", { count: localPlans.length })}</span>
         </div>
         <div className="mt-2 grid grid-cols-3 gap-1 rounded-lg bg-slate-200 p-1">
           {(["active", "paused", "all"] as const).map((value) => (
