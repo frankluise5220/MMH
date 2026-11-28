@@ -30,7 +30,7 @@ import type { CreditBillingDayRuleView } from "@/lib/credit/billing-day-rules";
 import { SettingsActionButton, SettingsInfoHint, SettingsPageHeader, useHideSettingDescriptions } from "@/components/settings/SettingsPageScaffold";
 import { SwipeActionRow, type SwipeActionItem } from "@/components/SwipeActionRow";
 import SettingsSwitch from "@/components/settings/SettingsSwitch";
-import { buildAccountDisplayOption } from "@/lib/account-display";
+import { accountNumberTail, buildAccountDisplayOption } from "@/lib/account-display";
 import { institutionFullName } from "@/lib/institution-display";
 import { accountOwnerNameById, buildAccountOwnerOptions } from "@/lib/account-owner-options";
 import { getCreditCardLabelTemplatePreference } from "@/lib/client/appPreferences";
@@ -1146,9 +1146,10 @@ export default function SettingsAccountsPage() {
     {
       key: "merge",
       label: "",
-      width: 44,
-      minWidth: 40,
+      width: 40,
+      minWidth: 36,
       align: "center",
+      hideable: true,
       render: (a) => (
         <label
           className="flex cursor-pointer items-center justify-center"
@@ -1172,6 +1173,7 @@ export default function SettingsAccountsPage() {
       width: 260,
       minWidth: 160,
       truncate: true,
+      hideable: true,
       // 名称列只显示账户名，排序也只按账户名；机构有独立列，不拼进名称。
       sortValue: (a) => a.name,
       cellTitle: (a) => [
@@ -1241,8 +1243,8 @@ export default function SettingsAccountsPage() {
       // 「归属」列：多币种子账户 → 父账户名；父账户 → 子账户数量。
       key: "hierarchy",
       label: t("settings.accounts.colHierarchy"),
-      width: 170,
-      minWidth: 120,
+      width: 150,
+      minWidth: 110,
       truncate: true,
       hideable: true,
       sortValue: (a) => (a.parentId ? accountNameById.get(a.parentId) ?? "" : ""),
@@ -1275,21 +1277,29 @@ export default function SettingsAccountsPage() {
       },
     },
     {
+      // 列 key 仍是 lastFour：它同时是列宽 / 列序 / 显隐的存档键，改名会让用户已调好的
+      // 列宽和顺序失效；表头文案已改为「卡号」（存的本来就是账号掩码，不是只有后四位）。
       key: "lastFour",
       label: t("settings.accounts.colLastFour"),
       width: 88,
-      minWidth: 72,
+      minWidth: 76,
+      hideable: true,
       sortValue: (a) => a.numberMasked || "",
       filterText: (a) => a.numberMasked || null,
-      render: (a) => (a.numberMasked
-        ? <span className="tabular-nums text-slate-700">{a.numberMasked}</span>
-        : <span className="text-slate-300">-</span>),
+      render: (a) => {
+        // 只显示后四位：库里可能存着完整卡号，列表里不该铺开一整串数字。
+        const tail = accountNumberTail(a.numberMasked);
+        return tail
+          ? <span className="tabular-nums text-slate-700">{tail}</span>
+          : <span className="text-slate-300">-</span>;
+      },
     },
     {
       key: "kind",
       label: t("settings.accounts.type"),
-      width: 190,
-      minWidth: 150,
+      width: 180,
+      minWidth: 140,
+      hideable: true,
       sortValue: (a) => {
         const index = kindOrder.indexOf(normalizedAccountKind(a));
         return String(index < 0 ? 99 : index).padStart(2, "0");
@@ -1327,9 +1337,10 @@ export default function SettingsAccountsPage() {
     {
       key: "owner",
       label: t("settings.accounts.owner"),
-      width: 110,
-      minWidth: 90,
+      width: 100,
+      minWidth: 80,
       truncate: true,
+      hideable: true,
       sortValue: (a) => ownerNameByGroupId.get(a.groupId ?? "") ?? a.AccountGroup?.name ?? "",
       filterText: (a) => ownerNameByGroupId.get(a.groupId ?? "") ?? a.AccountGroup?.name ?? null,
       render: (a) => {
@@ -1342,9 +1353,10 @@ export default function SettingsAccountsPage() {
     {
       key: "institution",
       label: t("settings.accounts.institution"),
-      width: 170,
-      minWidth: 120,
+      width: 160,
+      minWidth: 110,
       truncate: true,
+      hideable: true,
       sortValue: (a) => institutionFullName(a.Institution) || a.Counterparty?.shortName?.trim() || a.Counterparty?.name || "",
       filterText: (a) => (normalizedAccountKind(a) === "settlement"
         ? a.Counterparty?.shortName?.trim() || a.Counterparty?.name || null
@@ -1363,8 +1375,9 @@ export default function SettingsAccountsPage() {
       // for settlement accounts whose counterparty is included in the account data.
       key: "reimbursable",
       label: t("settings.counterparties.reimbursable"),
-      width: 84,
-      minWidth: 64,
+      width: 76,
+      minWidth: 60,
+      hideable: true,
       sortValue: (a) => (normalizedAccountKind(a) === "settlement" ? (a.Counterparty?.isReimbursable === true ? 0 : 1) : 2),
       filterText: (a) => (normalizedAccountKind(a) === "settlement"
         ? (a.Counterparty?.isReimbursable === true ? t("settings.counterparties.reimbursableYes") : t("settings.counterparties.reimbursableNo"))
@@ -1382,8 +1395,9 @@ export default function SettingsAccountsPage() {
     {
       key: "currency",
       label: t("settings.accounts.currency"),
-      width: 76,
-      minWidth: 64,
+      width: 68,
+      minWidth: 56,
+      hideable: true,
       sortValue: (a) => a.currency,
       filterText: (a) => a.currency,
       render: (a) => <span className="tabular-nums text-slate-600">{a.currency}</span>,
@@ -1394,8 +1408,8 @@ export default function SettingsAccountsPage() {
       // 这里只展示，绝不重算——重算就会和侧边栏/首页对不上。
       key: "balance",
       label: t("settings.accounts.colBalance"),
-      width: 150,
-      minWidth: 112,
+      width: 144,
+      minWidth: 108,
       align: "right",
       hideable: true,
       sortValue: (a) => {
@@ -1472,9 +1486,10 @@ export default function SettingsAccountsPage() {
     {
       key: "records",
       label: t("settings.accounts.colRecords"),
-      width: 96,
-      minWidth: 76,
+      width: 76,
+      minWidth: 64,
       align: "right",
+      hideable: true,
       sortValue: (a) => a.recordCount ?? 0,
       cellTitle: (a) => tf("settings.accounts.recordCountTitle", {
         count: a.recordCount ?? 0,
@@ -1504,9 +1519,10 @@ export default function SettingsAccountsPage() {
       // 「待删」独立列：软删除记录数，点击打开预览弹窗（预览 + 全选/逐条彻底删除）。
       key: "deletedRecords",
       label: t("settings.accounts.colDeletedCount"),
-      width: 84,
-      minWidth: 64,
+      width: 64,
+      minWidth: 54,
       align: "right",
+      hideable: true,
       sortValue: (a) => a.deletedRecordCount ?? 0,
       cellTitle: (a) => (a.deletedRecordCount ? tf("settings.accounts.deletedCountTitle", { count: a.deletedRecordCount }) : ""),
       render: (a) => (a.deletedRecordCount ? (
@@ -1523,8 +1539,9 @@ export default function SettingsAccountsPage() {
     {
       key: "status",
       label: t("depositShell.colStatus"),
-      width: 84,
+      width: 80,
       minWidth: 72,
+      hideable: true,
       sortValue: (a) => (a.isActive ? 0 : 1),
       filterText: (a) => (a.isActive ? t("common.enabled") : t("common.disabled")),
       render: (a) => (
@@ -1537,8 +1554,8 @@ export default function SettingsAccountsPage() {
       // 自定义分组标签（2026-11-13）：侧边栏「按分组」与账户下拉分组都读它。
       key: "accountGroup",
       label: t("settings.accounts.accountGroup"),
-      width: 120,
-      minWidth: 88,
+      width: 110,
+      minWidth: 80,
       hideable: true,
       sortValue: (a) => (a.accountGroup ?? "").trim(),
       filterText: (a) => (a.accountGroup ?? "").trim() || null,
@@ -1552,8 +1569,8 @@ export default function SettingsAccountsPage() {
     {
       key: "note",
       label: t("settings.accounts.note"),
-      width: 220,
-      minWidth: 140,
+      width: 200,
+      minWidth: 130,
       truncate: true,
       hideable: true,
       sortValue: (a) => a.note || "",
@@ -1714,7 +1731,8 @@ export default function SettingsAccountsPage() {
                     if (!a.isAggregate && a.currency !== baseCurrency && !display.label.includes(a.currency)) {
                       metaParts.push(a.currency);
                     }
-                    if (a.numberMasked && !display.label.includes(a.numberMasked)) metaParts.push(a.numberMasked);
+                    const metaTail = accountNumberTail(a.numberMasked);
+                    if (metaTail && !display.label.includes(metaTail)) metaParts.push(metaTail);
                     if (childCount > 0) metaParts.push(t("settings.accounts.hierarchyChildCount", { count: childCount }));
                     if (parentName && !display.label.includes(parentName)) {
                       metaParts.push(`${t("settings.accounts.colHierarchy")} ${parentName}`);
@@ -1946,7 +1964,7 @@ export default function SettingsAccountsPage() {
           columns={accountTableColumnsWithGroupRows}
           rows={accountTableRows}
           rowKey={(a) => a.id}
-          minTableWidth={1590}
+          minTableWidth={1100}
           // 分组视图靠「组头底色 + 组间横线」分层，列竖线会和它打架，这里关掉。
           columnDividers={false}
           fillHeight
@@ -1971,8 +1989,11 @@ export default function SettingsAccountsPage() {
           onRowDoubleClick={(a) => { if (isGroupSummaryRow(a)) return; if (!a.isPlaceholder) openEdit(a); }}
           onDisplayRowsChange={setDisplayRows}
           rowActions={renderRowActions}
-          rowActionsWidth={116}
-          rowActionsMinWidth={104}
+          rowActionsWidth={106}
+          rowActionsMinWidth={96}
+          // 列多、窗口窄（右侧还挂着 AI 面板）时表格必然横向滚动，把「编辑/停用/删除」
+          // 这一列钉在右边缘，用户不用拖到最右边才能改账户。
+          stickyRowActions
           // 筛选控件放 ADT 工具栏左侧：与右侧「表头设置」按钮同一行；右上角只留动作按钮。
           toolbarMode="default"
           // 「表头设置」不能走 ADT 内置的右组：`toolbarRightContent` 是个 flex-1 的独立 item，
@@ -2111,11 +2132,14 @@ export default function SettingsAccountsPage() {
           // 附属卡不能再挂附属卡。
           primaryCardId: accounts
             .filter((account) => account.kind === "bank_credit" && account.creditBillMode !== "supplementary" && account.cardRole !== "supplementary")
-            .map((account) => ({
-              id: account.id,
-              name: account.numberMasked ? `${account.name} · ${account.numberMasked}` : account.name,
-              institutionId: account.institutionId,
-            })),
+            .map((account) => {
+              const tail = accountNumberTail(account.numberMasked);
+              return {
+                id: account.id,
+                name: tail && !account.name.includes(tail) ? `${account.name} · ${tail}` : account.name,
+                institutionId: account.institutionId,
+              };
+            }),
           // 往来款账户的「往来对象」下拉：只允许 person/organization（merchant 是常用商户，不当往来款对象）
           counterpartyId: counterparties
             .filter((counterparty) => isSettlementCounterpartyType(counterparty.type))

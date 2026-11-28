@@ -1318,10 +1318,9 @@ export function AdvancedDataTable<T>({
   const viewportRef = useRef<HTMLDivElement>(null);
   // 表头渲染在表体滚动容器**之外**，横向滚动时用 transform 平移跟随（直接改 DOM，不触发 React 重渲染）。
   const headerInnerRef = useRef<HTMLDivElement>(null);
-  // 钉住的表头列（只支持最右一列）：DOM 引用、当前位移、以及它右边缘相对表格右边缘的偏移。
+  // 钉住的表头列（只支持最右一列）：DOM 引用与当前位移。
   const stickyHeaderCellRef = useRef<HTMLElement | null>(null);
   const stickyHeaderShiftRef = useRef(0);
-  const stickyHeaderOffsetRef = useRef<number | null>(null);
   // 表体里对应的那一格：表头固定列的定位基准（它的右边缘就是「应该对齐的那根线」）。
   const stickyBodyCellRef = useRef<HTMLElement | null>(null);
   // 汇总条固定在卡片底边（`summaryRowPlacement="footer"`）：同样脱离表格，单独渲染一张同列宽的窄表。
@@ -1341,17 +1340,9 @@ export function AdvancedDataTable<T>({
     if (!cell || !cell.isConnected) {
       cell = inner.querySelector<HTMLElement>("[data-advanced-table-sticky-header]");
       stickyHeaderCellRef.current = cell;
-      stickyHeaderOffsetRef.current = null;
       stickyHeaderShiftRef.current = 0;
     }
     if (!cell) return;
-    const innerRect = inner.getBoundingClientRect();
-    if (stickyHeaderOffsetRef.current == null) {
-      // 该格右边缘相对表格右边缘的位置（行操作列是最后一列，恒为 0），只在表格布局变化时重算。
-      stickyHeaderOffsetRef.current = cell.getBoundingClientRect().right
-        - stickyHeaderShiftRef.current
-        - innerRect.right;
-    }
     let bodyCell = stickyBodyCellRef.current;
     if (!bodyCell || !bodyCell.isConnected) {
       bodyCell = viewport.querySelector<HTMLElement>("[data-advanced-table-sticky-body]");
@@ -1361,7 +1352,11 @@ export function AdvancedDataTable<T>({
       ? bodyCell.getBoundingClientRect().right
       // 没有数据行（空表）时没有表体可参照：用内容区右边缘，同样排除竖直滚动条。
       : viewport.getBoundingClientRect().left + viewport.clientLeft + viewport.clientWidth;
-    const shift = targetRight - innerRect.right - stickyHeaderOffsetRef.current;
+    // 这一格在表格里的**自然**右边缘 = 当前 rect 减去自己身上的位移。这样每次都是现算，
+    // 不缓存「相对表头右边缘的偏移」——表头右侧让出的滚动条宽度、表格总宽都会在挂载后才落定，
+    // 缓存的偏移一旦量早了一次，滚动到 0 位置时两条竖线就会差一条滚动条的宽度。
+    const naturalRight = cell.getBoundingClientRect().right - stickyHeaderShiftRef.current;
+    const shift = targetRight - naturalRight;
     stickyHeaderShiftRef.current = shift;
     cell.style.transform = `translateX(${shift}px)`;
   }, []);
@@ -3695,7 +3690,10 @@ export function AdvancedDataTable<T>({
     <>
       <div className="mb-1 px-1 text-[11px] font-semibold text-slate-500">{t("table.visibleColumns")}</div>
       <div className="max-h-56 space-y-1 overflow-y-auto">
-        {orderedColumns.filter((column) => column.key !== "__row_actions").map((column) => (
+        {/* 没有表头文字的是勾选/合并这类非数据列，进菜单也说不清是哪一项，直接不列。 */}
+        {orderedColumns.filter((column) => (
+          column.key !== "__row_actions" && column.label != null && column.label !== ""
+        )).map((column) => (
           <label
             key={column.key}
             className={[
@@ -3773,12 +3771,12 @@ export function AdvancedDataTable<T>({
     (viewportWidth > 0 && layout.tableWidth > viewportWidth + HORIZONTAL_SCROLL_TOLERANCE_PX);
 
   // 表格总宽变化（拖列宽、显隐列）或滚动容器变宽（窗口 resize，滚动条可能随之出现/消失）后，
-  // 钉住的表头列要重新定位：缓存的行内偏移失效，重算后再贴一次右边缘，否则会和表体那一列错开。
-  // viewportWidth 必须进依赖：只改容器宽度时不会触发 scroll 事件，表头会停在旧位置。
+  // 钉住的表头列要重新贴一次右边缘，否则会和表体那一列错开。viewportWidth / scrollbarGutterWidth
+  // 必须进依赖：只改容器宽度时不会触发 scroll 事件，表头会停在旧位置；滚动条占位也是挂载后才量出来的。
+  // 行数也要：首帧没有表体行时只能按内容区右边缘定位，数据到齐后表体那一格才会出现。
   useLayoutEffect(() => {
-    stickyHeaderOffsetRef.current = null;
     syncHeaderToScrollLeft(viewportRef.current?.scrollLeft ?? 0);
-  }, [syncHeaderToScrollLeft, tableWidthStyle, viewportWidth]);
+  }, [syncHeaderToScrollLeft, tableWidthStyle, viewportWidth, scrollbarGutterWidth, filteredRows.length]);
 
   const handleViewportScroll = useCallback((event: ReactUIEvent<HTMLDivElement>) => {
     syncHeaderToScrollLeft(event.currentTarget.scrollLeft);
