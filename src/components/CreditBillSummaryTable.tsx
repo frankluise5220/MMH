@@ -602,16 +602,14 @@ export function CreditBillSummaryTable({
       render: (row) => row.isCurrentCycle ? (
         <span className="tabular-nums text-slate-400">-</span>
       ) : (
-        <span onClick={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}>
-          <EditBillAmount
-            accountId={accountId}
-            statementMonth={row.month}
-            currentAmount={row.effectiveBill}
-            hasOverride={row.hasOverride}
-            displayMultiplier={-1}
-            postOverrideAdjustment={0}
-          />
-        </span>
+        <EditBillAmount
+          accountId={accountId}
+          statementMonth={row.month}
+          currentAmount={row.effectiveBill}
+          hasOverride={row.hasOverride}
+          displayMultiplier={-1}
+          postOverrideAdjustment={0}
+        />
       ),
     },
     {

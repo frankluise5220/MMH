@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, Unlock } from "lucide-react";
+import { Unlock } from "lucide-react";
 
 import { formatMoneyYuan as formatMoney } from "@/lib/format";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
@@ -29,7 +29,9 @@ export default function EditBillAmount({
   const [val, setVal] = useState(String(displayAmount.toFixed(2)));
   const [saving, setSaving] = useState(false);
   const [errMsg, setErrMsg] = useState("");
-  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const savingRef = useRef(false);
+  const skipBlurCommitRef = useRef(false);
   const { t } = useI18n();
 
   useEffect(() => {
@@ -46,6 +48,15 @@ export default function EditBillAmount({
       setErrMsg("");
     }
   }, [displayAmount, editing]);
+
+  useEffect(() => {
+    if (!editing) return;
+    const input = inputRef.current;
+    if (!input) return;
+    input.focus({ preventScroll: true });
+    const caret = input.value.length;
+    input.setSelectionRange(caret, caret);
+  }, [editing]);
 
   useEffect(() => {
     function handleBillOverrideChanged(event: Event) {
@@ -65,7 +76,16 @@ export default function EditBillAmount({
     return () => window.removeEventListener("mmh:bill-override:changed", handleBillOverrideChanged as EventListener);
   }, [accountId, statementMonth]);
 
+  const startEdit = useCallback(() => {
+    if (savingRef.current) return;
+    skipBlurCommitRef.current = false;
+    setVal(String(displayAmount.toFixed(2)));
+    setErrMsg("");
+    setEditing(true);
+  }, [displayAmount]);
+
   const cancelEdit = useCallback(() => {
+    skipBlurCommitRef.current = true;
     setVal(String(displayAmount.toFixed(2)));
     setErrMsg("");
     setEditing(false);
@@ -85,6 +105,14 @@ export default function EditBillAmount({
     if (explicitNegative) return -abs;
     return displayMultiplier === -1 ? -abs : abs;
   }, [displayMultiplier]);
+
+  const focusInput = useCallback(() => {
+    requestAnimationFrame(() => {
+      inputRef.current?.focus({ preventScroll: true });
+      const caret = inputRef.current?.value.length ?? 0;
+      inputRef.current?.setSelectionRange(caret, caret);
+    });
+  }, []);
 
   const save = useCallback(async (amount: number) => {
     if (!accountId || !statementMonth) return;
@@ -119,8 +147,44 @@ export default function EditBillAmount({
     } catch {
       setErrMsg(t("editBill.networkError"));
     }
+    skipBlurCommitRef.current = false;
     setSaving(false);
-  }, [accountId, postOverrideAdjustment, statementMonth, t]);
+    focusInput();
+  }, [accountId, focusInput, postOverrideAdjustment, statementMonth, t]);
+
+  const commit = useCallback(async () => {
+    if (savingRef.current) return;
+    const displayValue = parseDisplayInput(val);
+    if (displayValue == null) {
+      setErrMsg(t("editBill.invalidAmount"));
+      focusInput();
+      return;
+    }
+    const amount = displayValue / displayMultiplier;
+    // 和原来一样就直接退出，不写 override（金额显示只有两位小数，留 0.005 容差）
+    if (Math.abs(amount - committedAmount) < 0.005) {
+      skipBlurCommitRef.current = true;
+      setVal(String(displayAmount.toFixed(2)));
+      setErrMsg("");
+      setEditing(false);
+      return;
+    }
+    savingRef.current = true;
+    skipBlurCommitRef.current = true;
+    try {
+      await save(amount);
+    } finally {
+      savingRef.current = false;
+    }
+  }, [committedAmount, displayAmount, displayMultiplier, focusInput, parseDisplayInput, save, t, val]);
+
+  const handleBlur = useCallback(() => {
+    if (skipBlurCommitRef.current) {
+      skipBlurCommitRef.current = false;
+      return;
+    }
+    void commit();
+  }, [commit]);
 
   const reset = useCallback(async () => {
     if (!accountId || !statementMonth) return;
@@ -135,64 +199,69 @@ export default function EditBillAmount({
     setSaving(false);
   }, [accountId, statementMonth]);
 
-  if (editing) {
-    return (
-      <div ref={wrapperRef} className="flex items-center gap-1">
-        <input
-          type="text"
-          inputMode="decimal"
-          className="h-6 w-20 rounded border border-blue-300 bg-white px-1.5 text-right text-xs tabular-nums text-blue-700 outline-none"
-          value={val}
-          onChange={(e) => setVal(e.target.value)}
-          onBlur={(e) => {
-            const next = e.relatedTarget as Node | null;
-            if (next && wrapperRef.current?.contains(next)) return;
-            cancelEdit();
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              const displayValue = parseDisplayInput(val);
-              if (displayValue != null) save(displayValue / displayMultiplier);
-            }
-            if (e.key === "Escape") cancelEdit();
-          }}
-          autoFocus
-          disabled={saving}
-        />
-        <button
-          type="button"
-          className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-emerald-500 text-white hover:bg-emerald-600"
-          onClick={() => {
-            const displayValue = parseDisplayInput(val);
-            if (displayValue != null) save(displayValue / displayMultiplier);
-          }}
-          disabled={saving}
-          title={t("editBill.confirmLock")}
-        >
-          <Check className="h-3 w-3" strokeWidth={3} />
-        </button>
-        {errMsg ? <span className="text-[10px] text-red-500">{errMsg}</span> : null}
-      </div>
-    );
-  }
+  const amountText = formatMoney(displayAmount);
 
   return (
     <span
-      className="inline-flex cursor-pointer items-center gap-1 tabular-nums hover:text-blue-600"
-      onClick={() => {
-        setVal(String(displayAmount.toFixed(2)));
-        setErrMsg("");
-        setEditing(true);
+      className={[
+        "relative -mx-3 flex w-full items-center justify-end gap-1 px-3 tabular-nums transition-colors",
+        editing ? "bg-blue-100" : "cursor-pointer hover:bg-slate-50",
+      ].join(" ")}
+      data-edit-bill-active={editing ? "true" : undefined}
+      // 整格拦截点击，不让 AdvancedDataTable 的 onRowClick 选中/切换账单行
+      onClick={(event) => {
+        event.stopPropagation();
+        if (!editing) startEdit();
       }}
-      title={t("editBill.clickToEdit")}
+      onDoubleClick={(event) => event.stopPropagation()}
+      title={editing ? undefined : t("editBill.clickToEdit")}
     >
-      {formatMoney(displayAmount)}
+      {/* 输入框绝对定位覆盖文字；不画自己的边框，编辑态只用这一格的背景色区分 */}
+      <span className="relative inline-flex min-w-[4.5rem] items-center justify-end">
+        <span className={editing ? "text-transparent" : "hover:text-blue-600"} data-edit-bill-amount={statementMonth}>
+          {amountText}
+        </span>
+        {editing ? (
+          <input
+            ref={inputRef}
+            type="text"
+            inputMode="decimal"
+            aria-label={t("editBill.clickToEdit")}
+            title={errMsg || t("editBill.editHint")}
+            className={[
+              "absolute inset-0 w-full bg-transparent text-right tabular-nums caret-blue-700 outline-none",
+              errMsg ? "text-red-600" : "",
+            ].join(" ")}
+            value={val}
+            onChange={(event) => {
+              setVal(event.target.value);
+              if (errMsg) setErrMsg("");
+            }}
+            onBlur={handleBlur}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                void commit();
+              } else if (event.key === "Escape") {
+                event.preventDefault();
+                cancelEdit();
+              }
+            }}
+            disabled={saving}
+          />
+        ) : null}
+        {errMsg ? (
+          <span className="pointer-events-none absolute left-full top-1/2 z-20 ml-2 -translate-y-1/2 whitespace-nowrap text-[10px] text-red-600">
+            {errMsg}
+          </span>
+        ) : null}
+      </span>
       {localHasOverride ? (
         <Unlock
-          className="h-3.5 w-3.5 shrink-0 cursor-pointer text-orange-400 hover:text-orange-600"
-          onClick={(e) => {
-            e.stopPropagation();
+          className={`h-3.5 w-3.5 shrink-0 ${editing ? "invisible" : "cursor-pointer text-orange-400 hover:text-orange-600"}`}
+          onClick={(event) => {
+            if (editing) return;
+            event.stopPropagation();
             void reset();
           }}
           aria-label={t("editBill.unlockReset")}

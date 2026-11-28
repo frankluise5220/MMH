@@ -946,3 +946,8 @@ html {
 .mmh-hint-pill {
   animation: mmh-hint-in 120ms ease-out both;
 }
+
+/* 账单金额编辑态：整格（含单元格内边距）换背景色；边框仍由表格自身的分隔线提供。 */
+td:has([data-edit-bill-active="true"]) {
+  background-color: #dbeafe;
+}
