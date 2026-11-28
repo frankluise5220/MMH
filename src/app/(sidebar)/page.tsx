@@ -1841,7 +1841,8 @@ export default async function Home({
         Counterparty: selectedAccount.Counterparty,
       }, selectedAccount.kind === AccountKind.bank_credit ? SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE : creditCardLabelTemplate, accountRenderSettings(accountLabelFields, baseCurrency));
       const accountLabel = display.label;
-      if (isPureInvestmentAccount(selectedAccount)) return accountLabel;
+      // 视图上方的账户标签与资金账户同口径：所有人一律排在最前面。
+      // 此前纯投资账户提前 return，只剩账户名，少了所有人（2026-11-28 统一）。
       if (isDepositAccount(selectedAccount)) return `${t("entry.kind.deposit")} / ${accountLabel}`;
       if (selectedAccount.kind === AccountKind.insurance) return `${t("entry.kind.insurance")} / ${accountLabel}`;
       const group = isLoanOrSettlementAccountKind(selectedAccount.kind) ? "" : (selectedAccount.AccountGroup?.name ?? "").trim();
