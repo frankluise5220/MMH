@@ -787,6 +787,15 @@ export function BasicDetailPanel({
   const detailPageKey = buildDetailPageRequestKey(safePage, pageSize, detailAll);
   const detailPageKeyRef = useRef(detailPageKey);
   detailPageKeyRef.current = detailPageKey;
+  /**
+   * 「这次换页大小已经在本地切完，别再取一遍」的一次性标记（存取页 effect 的 key）。
+   *
+   * 换页大小只改变「一页装几行」：新页要的行如果是手上这份已加载页的前缀，切片就能
+   * 显示，服务端那一页的行一模一样。以前这个 effect 只认「RSC 首屏那份行数正好等于
+   * 已加载行数」，行数对不上就整页重取一次（实测 +0.9s），用户看到的就是切完行数
+   * 还停一下。这里把「本地已经切好」的结论交接给 effect，一跳过就失效。
+   */
+  const skipPageFetchKeyRef = useRef<string | null>(null);
 
   /** 取消表头筛选时的瞬时还原快照：只用于第 1 页，且必须和当前视图口径完全一致。 */
   const unfilteredPageSnapshotRef = useRef<UnfilteredPageSnapshot | null>(null);
@@ -1715,6 +1724,13 @@ export function BasicDetailPanel({
     const isFirstRun = !lastClientPaginationKeyRef.current;
     if (!isFirstRun && lastClientPaginationKeyRef.current === key) return;
     lastClientPaginationKeyRef.current = key;
+    // 换页大小已在本地切完（同一页、行还在手上）：这一页不用再问服务端。
+    // 一跳过就作废；key 对不上（期间又换了页 / 账户）也直接清掉，别留着挡后续取数。
+    const skippedKey = skipPageFetchKeyRef.current;
+    if (skippedKey !== null) {
+      skipPageFetchKeyRef.current = null;
+      if (skippedKey === key) return;
+    }
     // 首次进入且不是「全部」时，服务端 RSC 已经给了这一页，不必再取。
     // 「全部」则必须立刻补：服务端现在只渲染一页（全量渲染 4 万行会产出上百 MB
     // HTML），剩下的要靠这里按块拉回来，否则表格永远停在那一页。
@@ -1876,7 +1892,13 @@ export function BasicDetailPanel({
     setLocateScrollRequest({ key, id: locateScrollRequestIdRef.current });
   }, []);
 
-  const readCenteredDetailDate = () => {
+  /**
+   * 视口正中那一行（滚动容器内按中心距离取最近的一行）。
+   *
+   * 换页大小、进入「全部」都靠它把「用户正在看哪批记录」固定住。只读 DOM、不触发
+   * 网络；拿不到（虚拟化占位 / 空白区）时退回已渲染行的中间那一行。
+   */
+  const readCenteredEntry = (): DetailEntry | null => {
     const rows = displayRowsRef.current;
     if (rows.length === 0) return null;
     const viewport = panelRef.current?.querySelector(".advanced-table-viewport");
@@ -1900,7 +1922,12 @@ export function BasicDetailPanel({
       }
     }
     if (!target) target = rows[Math.floor(rows.length / 2)];
-    return target ? detailEntryDayKey(target, accountId) : null;
+    return target ?? null;
+  };
+
+  const readCenteredDetailDate = () => {
+    const entry = readCenteredEntry();
+    return entry ? detailEntryDayKey(entry, accountId) : null;
   };
 
   useEffect(() => {
@@ -1938,10 +1965,41 @@ export function BasicDetailPanel({
   }, [displayedEntryIds, normalExportRows, normalExportRowsByEntryId]);
 
   const applyPageSizeKeepingCenter = (nextPageSize: number, mode: "manual" | "fit") => {
-    const centerDate = readCenteredDetailDate();
+    const centerEntry = readCenteredEntry();
+    const centerDate = centerEntry ? detailEntryDayKey(centerEntry, accountId) : null;
     if (!clientPaginationEnabled || !centerDate) {
       detailPager.replace({ mode, rows: nextPageSize, page: 1 }, "locate");
       return;
+    }
+    /**
+     * 中心行还在当前页：页码本地就能算出来，不必问服务端。
+     *
+     * `localEntries` 是当前页开头连续的一段，中心行在里面的下标就是页内偏移，
+     * 全局序号 = (当前页 − 1) × 旧页大小 + 下标；除以新页大小取整即新页码。
+     * 算出来仍是当前页时，这些行已经在手上，`pageEntries` 按新大小切片即可 ——
+     * 以前这里固定发一次 `locateDate` 请求（服务端要重跑两遍全量排序链，实测
+     * 1.2–1.5s），用户看到的就是「下拉已经变 40、表格还停在 80」的那一下停顿。
+     *
+     * 缩小后中心行跨到下一页时才回退服务端定位：那时手上没有那一页的行，
+     * 直接改页码会先把前一页的内容当成新页渲染出来。
+     */
+    const localIndex = centerEntry ? localEntries.findIndex((entry) => entry.id === centerEntry.id) : -1;
+    if (localIndex >= 0) {
+      const globalIndex = (safePage - 1) * pageSize + localIndex;
+      const nextPage = Math.floor(globalIndex / Math.max(1, nextPageSize)) + 1;
+      if (nextPage === safePage) {
+        // 新页要的行就是手上这份已加载页的前缀：切片即可。若行数不够（页变长），
+        // 把标记留空，让取页 effect 照常补齐。
+        const needed = Math.min(
+          nextPageSize,
+          Math.max(0, localTotalCount - (nextPage - 1) * nextPageSize),
+        );
+        skipPageFetchKeyRef.current = localEntries.length >= needed
+          ? `${detailPaginationFetchKey(accountId, nextPageSize, detailAll, nextPage)}|${serverDateRangeKey}`
+          : null;
+        detailPager.replace({ mode, rows: nextPageSize, page: nextPage }, "locate");
+        return;
+      }
     }
     pendingCenterDateRef.current = centerDate;
     const seq = ++locateDateSeqRef.current;
